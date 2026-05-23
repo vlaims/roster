@@ -4,13 +4,6 @@ from discord import app_commands
 from discord.ext import commands
 import aiohttp
 
-# 🎨 HELPER FUNCTION: Maps standard characters to a Fancy Bold Serif Font Style
-def to_fancy_font(text):
-    normal_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    fancy_chars  = "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
-    trans = str.maketrans(normal_chars, fancy_chars)
-    return str(text).translate(trans)
-
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=discord.Intents.default())
@@ -178,15 +171,15 @@ async def members(interaction: discord.Interaction):
             sorted_dataset.append(vlaims_record)
         sorted_dataset.extend(other_records)
 
-        # Build raw string rows
+        # Build raw string rows (Normal Font formatting)
         all_lines = []
         for index, item in enumerate(sorted_dataset, 1):
             raw_name = item.get('name', 'Unknown')
             discord_user = item.get('discord_handle', 'N/A')
             player_id = item.get('player_id', 'N/A')
-            fancy_name = to_fancy_font(raw_name)
             
-            all_lines.append(f"**{index}. {fancy_name}**\n- # ↳ *ID:* `{player_id}` • *Discord:* `@{discord_user}`")
+            # Formats strictly with standard font. Only the Number + Name line is bold.
+            all_lines.append(f"**{index}. {raw_name}**\n↳ *ID:* `{player_id}` • *Discord:* `@{discord_user}`")
             
         # 📂 CHUNKING STEP: Split the array rows into sub-lists of exactly 5 elements each
         pages_content = []
@@ -262,10 +255,9 @@ async def kick(interaction: discord.Interaction, name: str):
                         await interaction.followup.send(f"Could not find a player named `{name}` in the database.")
                         return
                     
-                    fancy_kicked_name = to_fancy_font(name)
                     embed = discord.Embed(
                         title="Player Removed",
-                        description=f"**{fancy_kicked_name}** has been successfully scrubbed from the clan database roster.",
+                        description=f"**{name}** has been successfully scrubbed from the clan database roster.",
                         color=discord.Color.red()
                     )
                     await interaction.followup.send(embed=embed)
