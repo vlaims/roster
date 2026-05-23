@@ -13,7 +13,10 @@ def to_fancy_font(text):
 
 class MyBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix="!", intents=discord.Intents.default())
+        # 🚨 REQUIRED: Enabled members intent so the bot can find users to add roles/send DMs
+        intents = discord.Intents.default()
+        intents.members = True
+        super().__init__(command_prefix="!", intents=intents)
         
     async def setup_hook(self):
         TEST_GUILD = discord.Object(id=841573598799593472) 
@@ -112,6 +115,19 @@ class ApplicationApprovalView(discord.ui.View):
                         embed.add_field(name="Player ID", value=f"`{self.player_id}`", inline=True)
                         embed.add_field(name="Approved by", value=interaction.user.mention, inline=False)
                         
+                        # 👑 ROLES UPDATE LOGIC
+                        guild = interaction.guild
+                        if guild:
+                            member = discord.utils.get(guild.members, name=self.discord_handle)
+                            if member:
+                                kiss_role = discord.utils.get(guild.roles, name="kiss")
+                                applicator_role = discord.utils.get(guild.roles, name="applicator")
+                                
+                                if kiss_role:
+                                    await member.add_roles(kiss_role)
+                                if applicator_role:
+                                    await member.remove_roles(applicator_role)
+                                    
                         await interaction.edit_original_response(embed=embed, view=None)
                     else:
                         await interaction.followup.send(f"Failed to insert row (HTTP: `{response.status}`)", ephemeral=True)
@@ -125,6 +141,16 @@ class ApplicationApprovalView(discord.ui.View):
         embed = discord.Embed(title="Application Declined", color=discord.Color.red())
         embed.add_field(name="Character Name", value=f"`{self.name}`", inline=True)
         embed.add_field(name="Declined by", value=interaction.user.mention, inline=False)
+        
+        # 📨 TOXIC DM REJECTION LOGIC
+        guild = interaction.guild
+        if guild:
+            member = discord.utils.get(guild.members, name=self.discord_handle)
+            if member:
+                try:
+                    await member.send("Your application got rejected you fucking chud get better")
+                except discord.Forbidden:
+                    print(f"Could not send DM to {self.discord_handle} (DMs locked or blocked)")
         
         await interaction.edit_original_response(embed=embed, view=None)
 
@@ -143,7 +169,6 @@ async def members(interaction: discord.Interaction):
         await interaction.followup.send("Error: Supabase credentials are missing in Railway Environment Variables.")
         return
 
-    # Fetch ordered from Z to A natively first
     target_endpoint = f"{supabase_url.rstrip('/')}/rest/v1/roster?select=*&order=name.desc"
     headers = {"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"}
 
@@ -162,7 +187,6 @@ async def members(interaction: discord.Interaction):
 
         total_players = len(raw_data)
         
-        # 👑 OVERRIDE STEP: Locate 'vlaims' and pull him to the absolute front of the dataset
         vlaims_record = None
         other_records = []
         
@@ -172,13 +196,11 @@ async def members(interaction: discord.Interaction):
             else:
                 other_records.append(item)
                 
-        # Reconstruct the list: Vlaims goes first, everyone else remains sorted Z-A behind him
         sorted_dataset = []
         if vlaims_record:
             sorted_dataset.append(vlaims_record)
         sorted_dataset.extend(other_records)
 
-        # Build raw string rows
         all_lines = []
         for index, item in enumerate(sorted_dataset, 1):
             raw_name = item.get('name', 'Unknown')
@@ -188,15 +210,12 @@ async def members(interaction: discord.Interaction):
             
             all_lines.append(f"**{index}. {fancy_name}**\n- # ↳ *ID:* `{player_id}` • *Discord:* `@{discord_user}`")
             
-        # 📂 CHUNKING STEP: Split the array rows into sub-lists of exactly 5 elements each
         pages_content = []
         for i in range(0, len(all_lines), 5):
             chunk = all_lines[i:i+5]
             pages_content.append("\n".join(chunk))
             
-        # Spin up the pagination interface system
         view = RosterPaginationView(pages=pages_content, total_players=total_players)
-        
         await interaction.followup.send(embed=view.create_embed(), view=view)
         
     except Exception as e:
@@ -236,6 +255,7 @@ async def register(interaction: discord.Interaction, name: str, player_id: str):
     await logs_channel.send(content=ping, embed=log_embed, view=view)
 
     await interaction.followup.send("Application sent to administrators.", ephemeral=True)
+
 
 # ----------------------------------------------------
 # COMMAND 3: THE ADMIN /KICK REMOVAL COMMAND
