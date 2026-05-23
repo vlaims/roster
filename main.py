@@ -20,7 +20,7 @@ async def members(interaction: discord.Interaction):
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get('https://replit.app') as response:
+            async with session.get('https://clan-bot--vlaims.replit.app/') as response:
                 if response.status != 200:
                     await interaction.followup.send("❌ Error contacting the roster server.")
                     return
@@ -40,7 +40,7 @@ async def members(interaction: discord.Interaction):
 
         embed = discord.Embed(
             title="📋 Registered Clan Roster",
-            url="https://replit.app",
+            url="https://clan-bot--vlaims.replit.app/",
             description=member_list[:4096],
             color=discord.Color.blue()
         )
