@@ -9,7 +9,6 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=discord.Intents.default())
         
     async def setup_hook(self):
-        # Your verified server ID remains active
         TEST_GUILD = discord.Object(id=841573598799593472) 
         self.tree.copy_global_to(guild=TEST_GUILD)
         await self.tree.sync(guild=TEST_GUILD)
@@ -22,7 +21,7 @@ async def members(interaction: discord.Interaction):
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get('https://clan-bot--vlaims.replit.app/roster') as response:
+            async with session.get('https://replit.app') as response:
                 if response.status != 200:
                     await interaction.followup.send("❌ Error contacting the roster server.")
                     return
@@ -33,39 +32,32 @@ async def members(interaction: discord.Interaction):
             return
 
         lines = []
-        active_count = 0
         
         for index, item in enumerate(data, 1):
-            # Mapping keys directly to your real website database schema fields
-            player_name = item.get('player', item.get('name', 'Unknown'))
-            player_id = item.get('id', '')
-            discord_user = item.get('discord', 'N/A')
-            status = str(item.get('status', 'ACTIVE')).upper()
+            # Mapping perfectly to your database schema fields from the image
+            player_name = item.get('name', 'Unknown')
+            discord_handle = item.get('discord_handle', 'N/A')
+            player_id = item.get('player_id', '')
             
-            # Choose an emoji color indicator based on status
-            status_emoji = "🟢" if status == "ACTIVE" else "🔴"
-            if status == "ACTIVE":
-                active_count += 1
-            
-            # Creates a beautifully formatted line for each clan mate
-            id_bracket = f" (`{player_id}`)" if player_id else ""
-            lines.append(f"{status_emoji} **{index}. {player_name}**{id_bracket} | Discord: `@{discord_user}`")
+            # Formats each line: "👤 1. Ish (#37A3JS) | Discord: @4izennk"
+            id_str = f" (`{player_id}`)" if player_id else ""
+            lines.append(f"👤 **{index}. {player_name}**{id_str} | Discord: `@{discord_handle}`")
             
         member_list = "\n".join(lines)
 
-        # Custom themed UI embed match to your dark mode dashboard look
+        # Build clean embed profile layout
         embed = discord.Embed(
-            title="⚔️ Clan Roster Management Overview",
-            url="https://clan-bot--vlaims.replit.app/roster",
-            description=f"### Active Players: {active_count}/{len(data)}\n\n" + member_list[:3800],
-            color=discord.Color.from_rgb(43, 45, 49) # Clean Discord dark dashboard gray
+            title="📋 Clan Roster Database",
+            url="https://replit.app",
+            description=f"### Total Tracked Players: {len(data)}\n\n" + member_list[:3900],
+            color=discord.Color.blue()
         )
-        embed.set_footer(text="Data synced live from clan-bot--vlaims.replit.app")
+        embed.set_footer(text="Live data synced from vlaims database")
         
         await interaction.followup.send(embed=embed)
         
     except Exception as e:
-        print(f"Error: {e}")
-        await interaction.followup.send("❌ Failed to parse or fetch roster data from website.")
+        print(f"Error parsing data: {e}")
+        await interaction.followup.send("❌ Failed to read database properties correctly.")
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
