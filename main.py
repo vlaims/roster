@@ -216,7 +216,7 @@ async def register(interaction: discord.Interaction, name: str, player_id: str):
 
     await interaction.response.defer(ephemeral=True)
     
-        logs_channel = discord.utils.get(interaction.guild.text_channels, name="application-logs")
+    logs_channel = discord.utils.get(interaction.guild.text_channels, name="application-logs")
     admin_role = discord.utils.get(interaction.guild.roles, name="smooch")
 
     if not logs_channel:
