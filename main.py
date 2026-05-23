@@ -9,6 +9,7 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=discord.Intents.default())
         
     async def setup_hook(self):
+        # Your target guild sync configuration
         TEST_GUILD = discord.Object(id=841573598799593472) 
         self.tree.copy_global_to(guild=TEST_GUILD)
         await self.tree.sync(guild=TEST_GUILD)
@@ -17,62 +18,53 @@ bot = MyBot()
 
 @bot.tree.command(name="members", description="Previews all registered data from the clan roster")
 async def members(interaction: discord.Interaction):
-    # This gives us a 15-minute window so Discord doesn't say "Interaction Failed"
+    # Extends the interaction life to bypass a standard 3-second timeout limit
     await interaction.response.defer()
     
     try:
-        # Give the Replit server 10 seconds to respond before giving up
+        # Give your Replit backend up to 10 seconds to compile response packets
         timeout = aiohttp.ClientTimeout(total=10)
-        
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get('https://replit.app') as response:
-                print(f"DEBUG: Connected to API. Status code received: {response.status}")
-                
+            # Connect directly to your web app path
+            async with session.get('https://clan-bot--vlaims.replit.app/roster') as response:
                 if response.status != 200:
-                    await interaction.followup.send(f"❌ Web server returned an error code: `{response.status}`")
+                    await interaction.followup.send(f"❌ Error contacting the roster app. (Server Status: `{response.status}`)")
                     return
-                    
-                raw_data = await response.json()
+                data = await response.json()
                 
-        # 🚨 PRINT THE RAW DATA TO RAILWAY LOGS SO WE CAN INSPECT IT
-        print(f"DEBUG RAW PAYLOAD: {raw_data}")
-                
-        if isinstance(raw_data, dict):
-            if 'data' in raw_data: data = raw_data['data']
-            elif 'roster' in raw_data: data = raw_data['roster']
-            else: data = next((v for v in raw_data.values() if isinstance(v, list)), [])
-        else:
-            data = raw_data
-            
-        if not data or not isinstance(data, list):
-            await interaction.followup.send("⚠️ Database successfully read, but the roster table is completely empty.")
+        if not data:
+            await interaction.followup.send("No registered members found in the roster database.")
             return
 
         lines = []
         for index, item in enumerate(data, 1):
-            if not isinstance(item, dict): continue
+            if not isinstance(item, dict):
+                continue
+                
+            # Mapping columns explicitly matching your real schema image layout
+            player_name = item.get('name', 'Unknown')
+            discord_user = item.get('discord_handle', 'N/A')
+            player_id = item.get('player_id', '')
             
-            player_name = item.get('name') or item.get('player') or 'Unknown'
-            discord_handle = item.get('discord_handle') or item.get('discord') or 'N/A'
-            player_id = item.get('player_id') or item.get('id') or ''
-            
-            id_str = f" (`{player_id}`)" if player_id else ""
-            lines.append(f"👤 **{index}. {player_name}**{id_str} | Discord: `@{discord_handle}`")
+            # Formats clean rows: "👤 1. Ish (#37A3JS) | Discord: @4izennk"
+            id_bracket = f" (`{player_id}`)" if player_id else ""
+            lines.append(f"👤 **{index}. {player_name}**{id_bracket} | Discord: `@{discord_user}`")
             
         member_list = "\n".join(lines)
 
+        # Renders the clean aesthetic embed
         embed = discord.Embed(
-            title="📋 Clan Roster Database",
-            url="https://replit.app",
+            title="📋 Clan Roster Database Overview",
+            url="https://clan-bot--vlaims.replit.app/roster",
             description=f"### Total Tracked Players: {len(lines)}\n\n" + member_list[:3900],
             color=discord.Color.blue()
         )
+        embed.set_footer(text="Live data matched from vlaims server database")
+        
         await interaction.followup.send(embed=embed)
         
-    except aiohttp.ClientConnectorError:
-        await interaction.followup.send("❌ Could not connect to Replit. Check if your Replit app is awake or asleep!")
     except Exception as e:
-        print(f"CRITICAL PARSE ERROR: {e}")
-        await interaction.followup.send(f"❌ Processing layout failed. Error trace: `{str(e)}`")
+        print(f"DATABASE DESERIALIZATION ERROR: {e}")
+        await interaction.followup.send(f"❌ Failed to parse data layout structure.")
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
