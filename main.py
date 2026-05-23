@@ -40,11 +40,11 @@ class RosterPaginationView(discord.ui.View):
 
     def create_embed(self):
         embed = discord.Embed(
-            title="Live Supabase Clan Roster (Z-A)",
+            title="Kiss Clan Players",
             description=f"### Total Tracked Players: {self.total_players}\n\n" + self.pages[self.current_page],
             color=discord.Color.from_rgb(63, 207, 142)
         )
-        embed.set_footer(text=f"Page {self.current_page + 1} of {len(self.pages)} | Cloud Database Sync")
+        embed.set_footer(text=f"Page {self.current_page + 1} of {len(self.pages)} | Made by vlaims")
         return embed
 
     @discord.ui.button(label="<--", style=discord.ButtonStyle.green, custom_id="prev_page_btn")
