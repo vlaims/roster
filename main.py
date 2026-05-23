@@ -111,8 +111,8 @@ class ApplicationApprovalView(discord.ui.View):
                 async with session.post(target_endpoint, headers=headers, json=payload) as response:
                     if response.status in [200, 201]:
                         embed = discord.Embed(title="Application Approved", color=discord.Color.green())
-                        embed.add_field(name="Character Name", value=f"`{self.name}`", inline=True)
-                        embed.add_field(name="Player ID", value=f"`{self.player_id}`", inline=True)
+                        embed.add_field(name="Name", value=f"`{self.name}`", inline=True)
+                        embed.add_field(name="Kirka ID", value=f"`{self.player_id}`", inline=True)
                         embed.add_field(name="Approved by", value=interaction.user.mention, inline=False)
                         
                         # 👑 ROLES UPDATE LOGIC
@@ -148,7 +148,7 @@ class ApplicationApprovalView(discord.ui.View):
             member = discord.utils.get(guild.members, name=self.discord_handle)
             if member:
                 try:
-                    await member.send("Your application got rejected you fucking chud get better")
+                    await member.send("Your application got rejected your a fucking chud get better 😂😂😂")
                 except discord.Forbidden:
                     print(f"Could not send DM to {self.discord_handle} (DMs locked or blocked)")
         
@@ -227,7 +227,7 @@ async def members(interaction: discord.Interaction):
 # COMMAND 2: THE /REGISTER COMMAND WITH CHANNEL GATING
 # ----------------------------------------------------
 @bot.tree.command(name="register", description="Apply to join the clan")
-@app_commands.describe(name="Your character name", player_id="Your in-game ID")
+@app_commands.describe(name="Your name", player_id="Your in-game ID")
 async def register(interaction: discord.Interaction, name: str, player_id: str):
     if interaction.channel.name not in ["apply", "general"]:
         await interaction.response.send_message("Use this command in `#apply` or `#general`.", ephemeral=True)
