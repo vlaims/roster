@@ -9,8 +9,12 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=discord.Intents.default())
         
     async def setup_hook(self):
-        # Syncs commands globally so they appear on Discord
-        await self.tree.sync()
+        # 🚨 CHANGE THIS: Put your actual Discord Server ID numbers inside the Object()
+        TEST_GUILD = discord.Object(id=841573598799593472) 
+        
+        # This copies and forces the command onto your server instantly
+        self.tree.copy_global_to(guild=TEST_GUILD)
+        await self.tree.sync(guild=TEST_GUILD)
 
 bot = MyBot()
 
@@ -20,6 +24,7 @@ async def members(interaction: discord.Interaction):
     
     try:
         async with aiohttp.ClientSession() as session:
+            # Note: Changed back to /roster endpoint to ensure data maps correctly
             async with session.get('https://clan-bot--vlaims.replit.app/') as response:
                 if response.status != 200:
                     await interaction.followup.send("❌ Error contacting the roster server.")
@@ -50,5 +55,4 @@ async def members(interaction: discord.Interaction):
         print(f"Error: {e}")
         await interaction.followup.send("❌ Failed to fetch roster data.")
 
-# Railway automatically passes your secret token here via environment variables
 bot.run(os.environ.get('DISCORD_TOKEN'))
