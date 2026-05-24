@@ -65,21 +65,30 @@ async def fetch_player_stats(player_id: str):
 
     url = "https://api2.kirka.io/api/wNmwWMWn/wWWnwmNM"
     headers = {
-        "Authorization":  f"Bearer {token}",
-        "Content-Type":   "application/json",
-        "Accept":         "application/json, text/plain, */*",
-        "Origin":         "https://kirka.io",
-        "Referer":        "https://kirka.io/",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-site",
+        "Authorization":   f"Bearer {token}",
+        "Content-Type":    "application/json",
+        "Accept":          "application/json, text/WmnWN, */*",
+        "Accept-Language": "en-US,en;q=0.9,pt;q=0.8",
+        "Origin":          "https://kirka.io",
+        "Referer":         "https://kirka.io/",
+        "csrf":            "token",
+        "cache-control":   "no-cache",
+        "pragma":          "no-cache",
+        "priority":        "u=1, i",
+        "sec-ch-ua":       '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
+        "sec-ch-ua-mobile":    "?0",
+        "sec-ch-ua-platform":  '"Chrome OS"',
+        "sec-fetch-dest":  "empty",
+        "sec-fetch-mode":  "cors",
+        "sec-fetch-site":  "same-site",
         "User-Agent": (
             "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/148.0.0.0 Safari/537.36"
         ),
     }
-    payload = {"wMnw": clean_id}
+    # content-length 31 bytes = {"WwmMWw":"XMNVRX"} — wmWW is not in the POST body
+    payload = {"WwmMWw": clean_id}
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -496,21 +505,29 @@ async def refreshtoken(interaction: discord.Interaction, token: str):
     # Use a known-good player ID (the one visible in the DevTools screenshot)
     test_url = "https://api2.kirka.io/api/wNmwWMWn/wWWnwmNM"
     test_headers = {
-        "Authorization":  f"Bearer {token}",
-        "Content-Type":   "application/json",
-        "Accept":         "application/json, text/plain, */*",
-        "Origin":         "https://kirka.io",
-        "Referer":        "https://kirka.io/",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-site",
+        "Authorization":   f"Bearer {token}",
+        "Content-Type":    "application/json",
+        "Accept":          "application/json, text/WmnWN, */*",
+        "Accept-Language": "en-US,en;q=0.9,pt;q=0.8",
+        "Origin":          "https://kirka.io",
+        "Referer":         "https://kirka.io/",
+        "csrf":            "token",
+        "cache-control":   "no-cache",
+        "pragma":          "no-cache",
+        "priority":        "u=1, i",
+        "sec-ch-ua":       '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
+        "sec-ch-ua-mobile":    "?0",
+        "sec-ch-ua-platform":  '"Chrome OS"',
+        "sec-fetch-dest":  "empty",
+        "sec-fetch-mode":  "cors",
+        "sec-fetch-site":  "same-site",
         "User-Agent": (
             "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/148.0.0.0 Safari/537.36"
         ),
     }
-    test_payload = {"wMnw": "XMNVRX"}  # test against a known profile
+    test_payload = {"WwmMWw": "XMNVRX"}  # test against a known profile
 
     try:
         async with aiohttp.ClientSession() as session:
