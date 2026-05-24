@@ -1,16 +1,9 @@
 import os
-import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
 import json
-
-# ─────────────────────────────────────────────────────────────
-# NOTE FOR RAILWAY DEPLOYMENT
-# Add these to your Railway start command / Dockerfile:
-#   pip install playwright && playwright install chromium --with-deps
-# ─────────────────────────────────────────────────────────────
 
 # 🎨 HELPER: Fancy Bold Serif font mapper
 def to_fancy_font(text):
@@ -36,107 +29,88 @@ bot = MyBot()
 
 
 # ─────────────────────────────────────────────────────────────
-# 🌐 PLAYWRIGHT STAT FETCHER
-# Opens the Kirka.io profile page in a real headless browser,
-# intercepts the XHR response that contains wWNmMWnm, and
-# pulls wWwnNmMW (PRP) and wnWNmwWM (raw KD ÷ 1000).
+# 🌐 KIRKA.IO STAT FETCHER
+#
+# Hits the internal API directly:
+#   POST https://api2.kirka.io/api/wNmwWMWn/wWWnwmNM
+#   Body: { "wMnw": "<player_id>" }
+#
+# Response root key: wWNmMWnm
+#   wWwnNmMW  →  PRP  (float, e.g. 267.96)
+#   wnWNmwWM  →  raw KD integer ÷ 1000  (e.g. 830 → 0.83)
+#
+# Requires KIRKA_TOKEN env var — your Kirka Bearer JWT.
+# Get it from DevTools → Network → wWWnwmNM → Headers →
+# Authorization header value (without the "Bearer " prefix).
 # ─────────────────────────────────────────────────────────────
 async def fetch_player_stats(player_id: str):
-    """
-    Returns {'prp': float, 'kd': float} or None on failure.
-
-    How it works:
-      1. Launches a headless Chromium via Playwright.
-      2. Navigates to https://kirka.io/profile/<id>.
-      3. Intercepts every network response while the page loads.
-      4. The game fires an XHR that returns a JSON object whose
-         root key is wWNmMWnm (visible in DevTools → Network).
-      5. Inside that object:
-            wWwnNmMW  →  PRP  (already a float, e.g. 267.96)
-            wnWNmwWM  →  raw KD integer  (e.g. 830 → 0.83)
-    """
-    from playwright.async_api import async_playwright
+    """Returns {'prp': float, 'kd': float} or None on failure."""
 
     clean_id = player_id.replace('#', '').strip()
     if not clean_id:
         return None
 
-    url = f"https://kirka.io/profile/{clean_id}"
-    print(f"[Playwright] Opening {url}")
+    token = os.environ.get('KIRKA_TOKEN', '').strip()
+    if not token:
+        print("[Kirka] ERROR: KIRKA_TOKEN env var is not set.")
+        return None
 
-    captured = {}  # will hold the parsed JSON once we find it
+    url = "https://api2.kirka.io/api/wNmwWMWn/wWWnwmNM"
+    headers = {
+        "Authorization":  f"Bearer {token}",
+        "Content-Type":   "application/json",
+        "Accept":         "application/json, text/plain, */*",
+        "Origin":         "https://kirka.io",
+        "Referer":        "https://kirka.io/",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-site",
+        "User-Agent": (
+            "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/148.0.0.0 Safari/537.36"
+        ),
+    }
+    # POST body — "wMnw" is the obfuscated player ID field seen in the preview
+    payload = {"wMnw": clean_id}
 
     try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",   # avoids /dev/shm issues on Railway
-                    "--disable-gpu",
-                ]
-            )
-            context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                )
-            )
-            page = await context.new_page()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as response:
 
-            # ── Intercept every response and look for wWNmMWnm ──────────
-            async def on_response(response):
-                # Only inspect JSON-ish responses; skip images/fonts/etc.
-                ct = response.headers.get("content-type", "")
-                if "json" not in ct and "javascript" not in ct:
-                    return
-                try:
-                    body = await response.json()
-                    # The player object sits at the root key wWNmMWnm
-                    if isinstance(body, dict) and "wWNmMWnm" in body:
-                        captured["data"] = body["wWNmMWnm"]
-                        print(f"[Playwright] Captured wWNmMWnm for {clean_id}")
-                except Exception:
-                    pass  # not JSON or wrong shape — skip silently
+                if response.status == 401:
+                    print(f"[Kirka] 401 Unauthorized — KIRKA_TOKEN is expired or invalid.")
+                    return None
 
-            page.on("response", on_response)
+                if response.status != 200:
+                    print(f"[Kirka] HTTP {response.status} for player {clean_id}")
+                    return None
 
-            # Navigate and wait for network to go quiet (up to 20 s)
-            try:
-                await page.goto(url, wait_until="networkidle", timeout=25_000)
-            except Exception as e:
-                print(f"[Playwright] goto timed-out or errored ({e}), checking captured data anyway")
+                data = await response.json(content_type=None)
 
-            # Give a short extra window in case networkidle fired too early
-            if "data" not in captured:
-                await asyncio.sleep(3)
+                # Root wrapper is wWNmMWnm
+                player_obj = data.get("wWNmMWnm", data)
 
-            await browser.close()
+                prp_raw = player_obj.get("wWwnNmMW")   # PRP
+                kd_raw  = player_obj.get("wnWNmwWM")   # raw KD ÷ 1000
 
-        if "data" not in captured:
-            print(f"[Playwright] No wWNmMWnm data captured for {clean_id}")
-            return None
+                if prp_raw is None and kd_raw is None:
+                    print(f"[Kirka] Fields not found for {clean_id}. Keys: {list(player_obj.keys())}")
+                    return None
 
-        player_obj = captured["data"]
+                prp = float(prp_raw) if prp_raw is not None else 0.0
+                kd  = float(kd_raw)  / 1000.0 if kd_raw is not None else 0.0
 
-        # ── Extract the two fields ───────────────────────────────────────
-        prp_raw = player_obj.get("wWwnNmMW")   # PRP  – already a float
-        kd_raw  = player_obj.get("wnWNmwWM")   # KD   – raw int ÷ 1000
-
-        if prp_raw is None and kd_raw is None:
-            print(f"[Playwright] Fields missing. Available keys: {list(player_obj.keys())}")
-            return None
-
-        prp = float(prp_raw) if prp_raw is not None else 0.0
-        kd  = float(kd_raw)  / 1000.0 if kd_raw is not None else 0.0
-
-        print(f"[Playwright] {clean_id} → PRP={prp}, KD={kd}")
-        return {"prp": prp, "kd": kd}
+                print(f"[Kirka] {clean_id} → PRP={prp}, KD={kd}")
+                return {"prp": prp, "kd": kd}
 
     except Exception as e:
-        print(f"[Playwright] Fatal error for {clean_id}: {e}")
+        print(f"[Kirka] Error fetching stats for {clean_id}: {e}")
         return None
 
 
@@ -307,10 +281,10 @@ async def members(interaction: discord.Interaction):
 
         all_lines = []
         for index, item in enumerate(sorted_dataset, 1):
-            raw_name    = item.get('name', 'Unknown')
+            raw_name     = item.get('name', 'Unknown')
             discord_user = item.get('discord_handle', 'N/A')
-            player_id   = item.get('player_id', 'N/A')
-            fancy_name  = to_fancy_font(raw_name)
+            player_id    = item.get('player_id', 'N/A')
+            fancy_name   = to_fancy_font(raw_name)
             all_lines.append(
                 f"**{index}. {fancy_name}**\n"
                 f"- # ↳ *ID:* `{player_id}` • *Discord:* `@{discord_user}`"
@@ -399,7 +373,7 @@ async def kick(interaction: discord.Interaction, name: str):
 
 
 # ─────────────────────────────────────────────────────────────
-# COMMAND 4: /prp  — Leaderboard with PRP then K/D per player
+# COMMAND 4: /prp — Leaderboard sorted by PRP, shows PRP then K/D
 # ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="prp", description="Check Ranked 2v2 Points and K/D for all roster players")
 async def prp(interaction: discord.Interaction):
@@ -410,6 +384,14 @@ async def prp(interaction: discord.Interaction):
 
     if not supabase_url or not supabase_key:
         await interaction.followup.send("Error: Supabase credentials are missing.")
+        return
+
+    # Check token exists before doing anything
+    if not os.environ.get('KIRKA_TOKEN'):
+        await interaction.followup.send(
+            "❌ `KIRKA_TOKEN` is not set in Railway environment variables.\n"
+            "Go to DevTools → Network → click `wWWnwmNM` → Headers → copy the `Authorization` value (without `Bearer `) and add it to Railway."
+        )
         return
 
     target_endpoint = f"{supabase_url.rstrip('/')}/rest/v1/roster?select=*"
@@ -428,20 +410,17 @@ async def prp(interaction: discord.Interaction):
             return
 
         total = len(roster_data)
-        status_msg = await interaction.followup.send(
-            f"🔍 Launching browser to fetch stats for {total} players… this takes ~15–20 s per player."
-        )
+        status_msg = await interaction.followup.send(f"🔍 Fetching stats for {total} players...")
 
         results = []
         for idx, player in enumerate(roster_data, 1):
             player_id = player.get('player_id', '').strip()
             name      = player.get('name', 'Unknown')
 
-            # Update status every 3 players so the user sees progress
             if idx % 3 == 1:
                 try:
                     await status_msg.edit(
-                        content=f"🔍 Fetching stats… ({idx}/{total}) — currently checking **{name}**"
+                        content=f"🔍 Fetching stats… ({idx}/{total}) — **{name}**"
                     )
                 except Exception:
                     pass
@@ -457,7 +436,7 @@ async def prp(interaction: discord.Interaction):
             else:
                 results.append({'name': name, 'prp': 0.0, 'kd': 0.0, 'found': False})
 
-        # Sort by PRP, highest first
+        # Sort by PRP highest first
         results.sort(key=lambda x: x['prp'], reverse=True)
 
         embed = discord.Embed(
@@ -470,7 +449,6 @@ async def prp(interaction: discord.Interaction):
             fancy_name  = to_fancy_font(p['name'])
             prp_display = f"{p['prp']:,.2f}" if p['found'] else "N/A"
             kd_display  = f"{p['kd']:.2f}"   if p['found'] else "N/A"
-
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, f"**{idx}.**")
 
             leaderboard_text += (
@@ -480,7 +458,7 @@ async def prp(interaction: discord.Interaction):
             )
 
         embed.description = leaderboard_text
-        embed.set_footer(text="Data fetched live from kirka.io via headless browser | Made by vlaims")
+        embed.set_footer(text="Data fetched live from kirka.io | Made by vlaims")
 
         await status_msg.edit(content=None, embed=embed)
 
