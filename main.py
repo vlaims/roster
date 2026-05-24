@@ -104,10 +104,12 @@ async def fetch_player_stats(player_id: str):
                     return None
 
                 if response.status != 200:
-                    print(f"[Kirka] HTTP {response.status} for player {clean_id}")
+                    body = await response.text()
+                    print(f"[Kirka] HTTP {response.status} for player {clean_id} | body: {body[:300]}")
                     return None
 
                 data = await response.json(content_type=None)
+                print(f"[Kirka] Raw response for {clean_id}: {str(data)[:300]}")
                 player_obj = data.get("wWNmMWnm", data)
 
                 prp_raw = player_obj.get("wWwnNmMW")
