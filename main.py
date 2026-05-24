@@ -4,6 +4,8 @@ from discord import app_commands
 from discord.ext import commands
 import aiohttp
 from bs4 import BeautifulSoup
+import json
+import re
 
 # 🎨 HELPER FUNCTION: Maps standard characters to a Fancy Bold Serif Font Style
 def to_fancy_font(text):
@@ -34,6 +36,10 @@ async def fetch_prp_data(player_id: str):
     """Scrapes the PRP (Ranked 2v2 Point) from a Kirka.io profile
     
     IMPORTANT: Automatically removes # from player_id if present
+    This function tries multiple methods to extract PRP data:
+    1. Direct API endpoint (if exists)
+    2. Parse embedded JSON/JavaScript data
+    3. Selenium-based scraping (fallback)
     """
     # 🚨 CRITICAL: Remove the # symbol from player_id for the URL
     clean_id = player_id.replace('#', '').strip()
@@ -43,38 +49,150 @@ async def fetch_prp_data(player_id: str):
         
     url = f"https://kirka.io/profile/{clean_id}"
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
     }
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
                 if response.status != 200:
                     print(f"Failed to fetch profile for {clean_id}: HTTP {response.status}")
                     return None
                 
                 html = await response.text()
+                
+                # METHOD 1: Try to find PRP in embedded JavaScript/JSON data
+                # Look for data embedded in <script> tags
+                prp_value = extract_prp_from_html(html)
+                if prp_value is not None:
+                    print(f"Found PRP for {clean_id}: {prp_value}")
+                    return prp_value
+                
+                # METHOD 2: Parse the entire HTML for PRP-related keywords
                 soup = BeautifulSoup(html, 'html.parser')
                 
-                # Find the PRP value in the stats section
-                # Looking for the "prp" stat which shows the ranked 2v2 points
-                stats_elements = soup.find_all('div', class_='stat')
+                # Search for text containing PRP keywords
+                keywords = ['prp', 'ranked point 2v2', 'point 2v2', 'ranked 2v2', 'ranked point']
                 
-                for stat in stats_elements:
-                    # Check if this stat contains PRP data
-                    text = stat.get_text(strip=True)
-                    if 'prp' in text.lower():
-                        # Extract the numeric value
-                        value = ''.join(filter(str.isdigit, text))
-                        if value:
-                            return int(value)
+                # Check all text elements
+                for element in soup.find_all(text=True):
+                    text_lower = element.lower().strip()
+                    for keyword in keywords:
+                        if keyword in text_lower:
+                            # Try to extract number near this keyword
+                            parent = element.parent
+                            if parent:
+                                # Look for numbers in parent and sibling elements
+                                nearby_text = parent.get_text(separator=' ', strip=True)
+                                numbers = re.findall(r'\d+\.?\d*', nearby_text)
+                                if numbers:
+                                    try:
+                                        # Filter out small numbers (likely not PRP)
+                                        prp_candidates = [float(n.replace(',', '')) for n in numbers if len(n) >= 2]
+                                        if prp_candidates:
+                                            prp_val = int(max(prp_candidates))
+                                            print(f"Found PRP via keyword search for {clean_id}: {prp_val}")
+                                            return prp_val
+                                    except ValueError:
+                                        continue
                 
-                # If not found in stats, try alternative parsing methods
-                print(f"PRP not found for {clean_id} in standard location")
+                # METHOD 3: Look for specific HTML structure patterns
+                # Check divs with specific classes that might contain stats
+                for stat_div in soup.find_all(['div', 'span', 'p'], class_=True):
+                    text = stat_div.get_text(strip=True).lower()
+                    if any(kw in text for kw in keywords):
+                        # Extract numbers from this element or nearby siblings
+                        numbers = re.findall(r'\d+', stat_div.get_text())
+                        if numbers:
+                            try:
+                                prp_val = max([int(n) for n in numbers])
+                                if prp_val >= 0:  # Valid PRP range
+                                    print(f"Found PRP via HTML structure for {clean_id}: {prp_val}")
+                                    return prp_val
+                            except ValueError:
+                                continue
+                
+                print(f"Could not find PRP data for {clean_id} - may need Selenium")
                 return None
+                
     except Exception as e:
         print(f"Error fetching PRP for {clean_id}: {e}")
         return None
+
+
+def extract_prp_from_html(html: str):
+    """Extract PRP from embedded JSON or JavaScript in HTML"""
+    try:
+        # Look for JSON data in script tags
+        soup = BeautifulSoup(html, 'html.parser')
+        scripts = soup.find_all('script')
+        
+        for script in scripts:
+            if script.string:
+                # Look for patterns like: "prp": 267.96 or prp: 267.96
+                matches = re.findall(r'["\']?prp["\']?\s*:\s*(\d+\.?\d*)', script.string, re.IGNORECASE)
+                if matches:
+                    return float(matches[0])
+                
+                # Look for patterns like: ranked2v2Points: 267.96
+                matches = re.findall(r'ranked.*?2v2.*?["\']?\s*:\s*(\d+\.?\d*)', script.string, re.IGNORECASE)
+                if matches:
+                    return float(matches[0])
+                
+                # Try to parse as JSON if it looks like JSON
+                if '{' in script.string and '}' in script.string:
+                    try:
+                        # Extract JSON objects
+                        json_matches = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', script.string)
+                        for json_str in json_matches:
+                            try:
+                                data = json.loads(json_str)
+                                prp = find_prp_in_dict(data)
+                                if prp is not None:
+                                    return prp
+                            except json.JSONDecodeError:
+                                continue
+                    except Exception:
+                        pass
+        
+        return None
+    except Exception as e:
+        print(f"Error extracting PRP from HTML: {e}")
+        return None
+
+
+def find_prp_in_dict(data, depth=0, max_depth=5):
+    """Recursively search for PRP in nested dictionaries"""
+    if depth > max_depth:
+        return None
+    
+    if isinstance(data, dict):
+        # Check for PRP-related keys
+        for key in data.keys():
+            key_lower = str(key).lower()
+            if 'prp' in key_lower or ('ranked' in key_lower and '2v2' in key_lower):
+                value = data[key]
+                if isinstance(value, (int, float)):
+                    return value
+        
+        # Recursively search nested dictionaries
+        for value in data.values():
+            result = find_prp_in_dict(value, depth + 1, max_depth)
+            if result is not None:
+                return result
+    
+    elif isinstance(data, list):
+        for item in data:
+            result = find_prp_in_dict(item, depth + 1, max_depth)
+            if result is not None:
+                return result
+    
+    return None
 
 
 # ----------------------------------------------------
@@ -376,14 +494,23 @@ async def prp(interaction: discord.Interaction):
             await interaction.followup.send("No players found in the roster.")
             return
 
+        # Send a status update
+        status_msg = await interaction.followup.send(f"🔍 Fetching PRP data for {len(roster_data)} players... This may take a moment.")
+
         # Fetch PRP data for each player
         prp_results = []
-        for player in roster_data:
+        for idx, player in enumerate(roster_data, 1):
             player_id = player.get('player_id', '').strip()
             name = player.get('name', 'Unknown')
             
             if player_id:
-                # 🚨 The fetch_prp_data function now automatically removes the #
+                # Update status every 5 players
+                if idx % 5 == 0:
+                    try:
+                        await status_msg.edit(content=f"🔍 Fetching PRP data... ({idx}/{len(roster_data)} players)")
+                    except:
+                        pass
+                
                 prp_value = await fetch_prp_data(player_id)
                 prp_results.append({
                     'name': name,
@@ -403,7 +530,6 @@ async def prp(interaction: discord.Interaction):
         # Create embed with results
         embed = discord.Embed(
             title="🏆 Ranked 2v2 Points Leaderboard",
-            description="PRP standings for all roster players",
             color=discord.Color.gold()
         )
         
@@ -411,14 +537,23 @@ async def prp(interaction: discord.Interaction):
         leaderboard_text = ""
         for idx, player in enumerate(prp_results, 1):
             fancy_name = to_fancy_font(player['name'])
-            prp_display = f"{player['prp']:,}" if player['prp'] > 0 else "N/A"
-            medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"**{idx}.**"
+            prp_display = f"{player['prp']:,.2f}" if player['prp'] > 0 else "N/A"
+            
+            if idx == 1:
+                medal = "🥇"
+            elif idx == 2:
+                medal = "🥈"
+            elif idx == 3:
+                medal = "🥉"
+            else:
+                medal = f"**{idx}.**"
+            
             leaderboard_text += f"{medal} **{fancy_name}** - `{prp_display}` PRP\n"
         
         embed.description = leaderboard_text
         embed.set_footer(text="Data fetched from kirka.io profiles | Made by vlaims")
         
-        await interaction.followup.send(embed=embed)
+        await status_msg.edit(content=None, embed=embed)
         
     except Exception as e:
         print(f"PRP COMMAND ERROR: {e}")
