@@ -63,6 +63,8 @@ async def fetch_player_stats(player_id: str):
         print("[Kirka] ERROR: No token set. Use /refreshtoken to add one.")
         return None
 
+    cookie = os.environ.get('KIRKA_COOKIE', '').strip()
+
     url = "https://api2.kirka.io/api/wNmwWMWn/wWWnwmNM"
     headers = {
         "Authorization":   f"Bearer {token}",
@@ -87,6 +89,9 @@ async def fetch_player_stats(player_id: str):
             "Chrome/148.0.0.0 Safari/537.36"
         ),
     }
+    if cookie:
+        headers["cookie"] = cookie
+
     # content-length 31 bytes = {"WwmMWw":"XMNVRX"} — wmWW is not in the POST body
     payload = {"WwmMWw": clean_id}
 
@@ -506,6 +511,8 @@ async def refreshtoken(interaction: discord.Interaction, token: str):
     # Test the token against the Kirka API before accepting it
     # Use a known-good player ID (the one visible in the DevTools screenshot)
     test_url = "https://api2.kirka.io/api/wNmwWMWn/wWWnwmNM"
+    cookie = os.environ.get('KIRKA_COOKIE', '').strip()
+
     test_headers = {
         "Authorization":   f"Bearer {token}",
         "Content-Type":    "application/json",
@@ -529,6 +536,8 @@ async def refreshtoken(interaction: discord.Interaction, token: str):
             "Chrome/148.0.0.0 Safari/537.36"
         ),
     }
+    if cookie:
+        test_headers["cookie"] = cookie
     test_payload = {"WwmMWw": "XMNVRX"}  # test against a known profile
 
     try:
