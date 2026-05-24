@@ -3,7 +3,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
-from bs4 import BeautifulSoup
 import json
 import re
 
@@ -16,7 +15,6 @@ def to_fancy_font(text):
 
 class MyBot(commands.Bot):
     def __init__(self):
-        # 🚨 REQUIRED: Enabled members intent so the bot can find users to add roles/send DMs
         intents = discord.Intents.default()
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
@@ -30,169 +28,72 @@ bot = MyBot()
 
 
 # ----------------------------------------------------
-# 🌐 HELPER FUNCTION: FETCH PRP DATA FROM KIRKA.IO
+# 🌐 HELPER FUNCTION: FETCH PLAYER STATS FROM KIRKA.IO API
 # ----------------------------------------------------
-async def fetch_prp_data(player_id: str):
-    """Scrapes the PRP (Ranked 2v2 Point) from a Kirka.io profile
-    
-    IMPORTANT: Automatically removes # from player_id if present
-    This function tries multiple methods to extract PRP data:
-    1. Direct API endpoint (if exists)
-    2. Parse embedded JSON/JavaScript data
-    3. Selenium-based scraping (fallback)
+async def fetch_player_stats(player_id: str):
     """
-    # 🚨 CRITICAL: Remove the # symbol from player_id for the URL
-    clean_id = player_id.replace('#', '').strip()
+    Fetches PRP and KD from the Kirka.io internal player API endpoint.
     
+    The network response object is named wWNmMWnm and contains:
+      - wWwnNmMW  → PRP  (Ranked 2v2 Points, e.g. 267.96)
+      - wnWNmwWM  → KD raw integer; divide by 1000 to get the real K/D (e.g. 1000 → 1.000, 830 → 0.83)
+    
+    Returns a dict: { 'prp': float, 'kd': float } or None on failure.
+    """
+    # Strip the # prefix if the ID was stored with one
+    clean_id = player_id.replace('#', '').strip()
     if not clean_id:
         return None
-        
-    url = f"https://kirka.io/profile/{clean_id}"
+
+    # ----------------------------------------------------------------
+    # The Kirka.io profile page at /profile/<ID> fires a Fetch/XHR
+    # request to retrieve the player object (visible in DevTools as
+    # wWNmMWnw).  The endpoint pattern observed in the network tab is:
+    #   https://kirka.io/player/<clean_id>
+    # ----------------------------------------------------------------
+    url = f"https://kirka.io/player/{clean_id}"
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': f'https://kirka.io/profile/{clean_id}',
+        'Origin': 'https://kirka.io',
     }
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
                 if response.status != 200:
-                    print(f"Failed to fetch profile for {clean_id}: HTTP {response.status}")
+                    print(f"[Kirka] HTTP {response.status} for player {clean_id}")
                     return None
-                
-                html = await response.text()
-                
-                # METHOD 1: Try to find PRP in embedded JavaScript/JSON data
-                # Look for data embedded in <script> tags
-                prp_value = extract_prp_from_html(html)
-                if prp_value is not None:
-                    print(f"Found PRP for {clean_id}: {prp_value}")
-                    return prp_value
-                
-                # METHOD 2: Parse the entire HTML for PRP-related keywords
-                soup = BeautifulSoup(html, 'html.parser')
-                
-                # Search for text containing PRP keywords
-                keywords = ['prp', 'ranked point 2v2', 'point 2v2', 'ranked 2v2', 'ranked point']
-                
-                # Check all text elements
-                for element in soup.find_all(text=True):
-                    text_lower = element.lower().strip()
-                    for keyword in keywords:
-                        if keyword in text_lower:
-                            # Try to extract number near this keyword
-                            parent = element.parent
-                            if parent:
-                                # Look for numbers in parent and sibling elements
-                                nearby_text = parent.get_text(separator=' ', strip=True)
-                                numbers = re.findall(r'\d+\.?\d*', nearby_text)
-                                if numbers:
-                                    try:
-                                        # Filter out small numbers (likely not PRP)
-                                        prp_candidates = [float(n.replace(',', '')) for n in numbers if len(n) >= 2]
-                                        if prp_candidates:
-                                            prp_val = int(max(prp_candidates))
-                                            print(f"Found PRP via keyword search for {clean_id}: {prp_val}")
-                                            return prp_val
-                                    except ValueError:
-                                        continue
-                
-                # METHOD 3: Look for specific HTML structure patterns
-                # Check divs with specific classes that might contain stats
-                for stat_div in soup.find_all(['div', 'span', 'p'], class_=True):
-                    text = stat_div.get_text(strip=True).lower()
-                    if any(kw in text for kw in keywords):
-                        # Extract numbers from this element or nearby siblings
-                        numbers = re.findall(r'\d+', stat_div.get_text())
-                        if numbers:
-                            try:
-                                prp_val = max([int(n) for n in numbers])
-                                if prp_val >= 0:  # Valid PRP range
-                                    print(f"Found PRP via HTML structure for {clean_id}: {prp_val}")
-                                    return prp_val
-                            except ValueError:
-                                continue
-                
-                print(f"Could not find PRP data for {clean_id} - may need Selenium")
-                return None
-                
+
+                # The endpoint returns JSON — the root object is wWNmMWnm
+                data = await response.json(content_type=None)
+
+                # ── Pull the obfuscated field names ──────────────────────────
+                # wWNmMWnm is the root wrapper; navigate into it
+                player_obj = data.get('wWNmMWnm', data)  # fall back to root if already unwrapped
+
+                # PRP: wWwnNmMW
+                prp_raw = player_obj.get('wWwnNmMW')
+                # KD:  wnWNmwWM  (raw integer → divide by 1000)
+                kd_raw  = player_obj.get('wnWNmwWM')
+
+                if prp_raw is None and kd_raw is None:
+                    print(f"[Kirka] Fields not found in response for {clean_id}. Keys: {list(player_obj.keys())}")
+                    return None
+
+                prp = float(prp_raw) if prp_raw is not None else 0.0
+                kd  = float(kd_raw)  / 1000.0 if kd_raw  is not None else 0.0
+
+                print(f"[Kirka] {clean_id} → PRP={prp}, KD={kd}")
+                return {'prp': prp, 'kd': kd}
+
     except Exception as e:
-        print(f"Error fetching PRP for {clean_id}: {e}")
+        print(f"[Kirka] Error fetching stats for {clean_id}: {e}")
         return None
-
-
-def extract_prp_from_html(html: str):
-    """Extract PRP from embedded JSON or JavaScript in HTML"""
-    try:
-        # Look for JSON data in script tags
-        soup = BeautifulSoup(html, 'html.parser')
-        scripts = soup.find_all('script')
-        
-        for script in scripts:
-            if script.string:
-                # Look for patterns like: "prp": 267.96 or prp: 267.96
-                matches = re.findall(r'["\']?prp["\']?\s*:\s*(\d+\.?\d*)', script.string, re.IGNORECASE)
-                if matches:
-                    return float(matches[0])
-                
-                # Look for patterns like: ranked2v2Points: 267.96
-                matches = re.findall(r'ranked.*?2v2.*?["\']?\s*:\s*(\d+\.?\d*)', script.string, re.IGNORECASE)
-                if matches:
-                    return float(matches[0])
-                
-                # Try to parse as JSON if it looks like JSON
-                if '{' in script.string and '}' in script.string:
-                    try:
-                        # Extract JSON objects
-                        json_matches = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', script.string)
-                        for json_str in json_matches:
-                            try:
-                                data = json.loads(json_str)
-                                prp = find_prp_in_dict(data)
-                                if prp is not None:
-                                    return prp
-                            except json.JSONDecodeError:
-                                continue
-                    except Exception:
-                        pass
-        
-        return None
-    except Exception as e:
-        print(f"Error extracting PRP from HTML: {e}")
-        return None
-
-
-def find_prp_in_dict(data, depth=0, max_depth=5):
-    """Recursively search for PRP in nested dictionaries"""
-    if depth > max_depth:
-        return None
-    
-    if isinstance(data, dict):
-        # Check for PRP-related keys
-        for key in data.keys():
-            key_lower = str(key).lower()
-            if 'prp' in key_lower or ('ranked' in key_lower and '2v2' in key_lower):
-                value = data[key]
-                if isinstance(value, (int, float)):
-                    return value
-        
-        # Recursively search nested dictionaries
-        for value in data.values():
-            result = find_prp_in_dict(value, depth + 1, max_depth)
-            if result is not None:
-                return result
-    
-    elif isinstance(data, list):
-        for item in data:
-            result = find_prp_in_dict(item, depth + 1, max_depth)
-            if result is not None:
-                return result
-    
-    return None
 
 
 # ----------------------------------------------------
@@ -200,12 +101,11 @@ def find_prp_in_dict(data, depth=0, max_depth=5):
 # ----------------------------------------------------
 class RosterPaginationView(discord.ui.View):
     def __init__(self, pages: list, total_players: int):
-        super().__init__(timeout=180) # Timeout interaction automatically after 3 minutes
+        super().__init__(timeout=180)
         self.pages = pages
         self.total_players = total_players
         self.current_page = 0
         
-        # Disable the previous button on boot since we start on Page 1
         self.prev_page_btn.disabled = True
         if len(self.pages) <= 1:
             self.next_page_btn.disabled = True
@@ -224,12 +124,9 @@ class RosterPaginationView(discord.ui.View):
         await interaction.response.defer()
         if self.current_page > 0:
             self.current_page -= 1
-            
-        # Manage button dynamic disabling locks
         self.next_page_btn.disabled = False
         if self.current_page == 0:
             button.disabled = True
-            
         await interaction.edit_original_response(embed=self.create_embed(), view=self)
 
     @discord.ui.button(label="-->", style=discord.ButtonStyle.green, custom_id="next_page_btn")
@@ -237,11 +134,9 @@ class RosterPaginationView(discord.ui.View):
         await interaction.response.defer()
         if self.current_page < len(self.pages) - 1:
             self.current_page += 1
-            
         self.prev_page_btn.disabled = False
         if self.current_page == len(self.pages) - 1:
             button.disabled = True
-            
         await interaction.edit_original_response(embed=self.create_embed(), view=self)
 
 
@@ -284,14 +179,12 @@ class ApplicationApprovalView(discord.ui.View):
                         embed.add_field(name="Kirka ID", value=f"`{self.player_id}`", inline=True)
                         embed.add_field(name="Approved by", value=interaction.user.mention, inline=False)
                         
-                        # 👑 ROLES UPDATE LOGIC
                         guild = interaction.guild
                         if guild:
                             member = discord.utils.get(guild.members, name=self.discord_handle)
                             if member:
                                 kiss_role = discord.utils.get(guild.roles, name="kiss")
                                 applicator_role = discord.utils.get(guild.roles, name="applicator")
-                                
                                 if kiss_role:
                                     await member.add_roles(kiss_role)
                                 if applicator_role:
@@ -311,7 +204,6 @@ class ApplicationApprovalView(discord.ui.View):
         embed.add_field(name="Character Name", value=f"`{self.name}`", inline=True)
         embed.add_field(name="Declined by", value=interaction.user.mention, inline=False)
         
-        # 📨 TOXIC DM REJECTION LOGIC
         guild = interaction.guild
         if guild:
             member = discord.utils.get(guild.members, name=self.discord_handle)
@@ -358,7 +250,6 @@ async def members(interaction: discord.Interaction):
         
         vlaims_record = None
         other_records = []
-        
         for item in raw_data:
             if str(item.get('name', '')).lower() == 'vlaims':
                 vlaims_record = item
@@ -376,7 +267,6 @@ async def members(interaction: discord.Interaction):
             discord_user = item.get('discord_handle', 'N/A')
             player_id = item.get('player_id', 'N/A')
             fancy_name = to_fancy_font(raw_name)
-            
             all_lines.append(f"**{index}. {fancy_name}**\n- # ↳ *ID:* `{player_id}` • *Discord:* `@{discord_user}`")
             
         pages_content = []
@@ -422,7 +312,6 @@ async def register(interaction: discord.Interaction, name: str, player_id: str):
     view = ApplicationApprovalView(name=name, player_id=player_id, discord_handle=interaction.user.name)
     ping = admin_role.mention if admin_role else "@smooch"
     await logs_channel.send(content=ping, embed=log_embed, view=view)
-
     await interaction.followup.send("Application sent to administrators.", ephemeral=True)
 
 
@@ -465,9 +354,9 @@ async def kick(interaction: discord.Interaction, name: str):
 
 
 # ----------------------------------------------------
-# COMMAND 4: CHECK PRP (RANKED 2V2 POINTS) FOR ALL ROSTER PLAYERS
+# COMMAND 4: CHECK PRP & KD FOR ALL ROSTER PLAYERS
 # ----------------------------------------------------
-@bot.tree.command(name="prp", description="Check Ranked 2v2 Points for all roster players")
+@bot.tree.command(name="prp", description="Check Ranked 2v2 Points and K/D for all roster players")
 async def prp(interaction: discord.Interaction):
     await interaction.response.defer()
     
@@ -478,7 +367,6 @@ async def prp(interaction: discord.Interaction):
         await interaction.followup.send("Error: Supabase credentials are missing.")
         return
 
-    # Fetch all players from roster
     target_endpoint = f"{supabase_url.rstrip('/')}/rest/v1/roster?select=*"
     headers = {"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"}
 
@@ -494,51 +382,58 @@ async def prp(interaction: discord.Interaction):
             await interaction.followup.send("No players found in the roster.")
             return
 
-        # Send a status update
-        status_msg = await interaction.followup.send(f"🔍 Fetching PRP data for {len(roster_data)} players... This may take a moment.")
+        status_msg = await interaction.followup.send(
+            f"🔍 Fetching stats for {len(roster_data)} players... This may take a moment."
+        )
 
-        # Fetch PRP data for each player
-        prp_results = []
+        results = []
         for idx, player in enumerate(roster_data, 1):
             player_id = player.get('player_id', '').strip()
-            name = player.get('name', 'Unknown')
+            name      = player.get('name', 'Unknown')
             
+            if idx % 5 == 0:
+                try:
+                    await status_msg.edit(content=f"🔍 Fetching stats... ({idx}/{len(roster_data)} players)")
+                except Exception:
+                    pass
+
             if player_id:
-                # Update status every 5 players
-                if idx % 5 == 0:
-                    try:
-                        await status_msg.edit(content=f"🔍 Fetching PRP data... ({idx}/{len(roster_data)} players)")
-                    except:
-                        pass
-                
-                prp_value = await fetch_prp_data(player_id)
-                prp_results.append({
-                    'name': name,
+                stats = await fetch_player_stats(player_id)
+                results.append({
+                    'name':      name,
                     'player_id': player_id,
-                    'prp': prp_value if prp_value is not None else 0
+                    'prp':       stats['prp'] if stats else 0.0,
+                    'kd':        stats['kd']  if stats else 0.0,
+                    'found':     stats is not None,
                 })
             else:
-                prp_results.append({
-                    'name': name,
+                results.append({
+                    'name':      name,
                     'player_id': 'N/A',
-                    'prp': 0
+                    'prp':       0.0,
+                    'kd':        0.0,
+                    'found':     False,
                 })
-        
-        # Sort by PRP (highest first)
-        prp_results.sort(key=lambda x: x['prp'], reverse=True)
-        
-        # Create embed with results
+
+        # Sort by PRP highest first
+        results.sort(key=lambda x: x['prp'], reverse=True)
+
         embed = discord.Embed(
-            title="🏆 Ranked 2v2 Points Leaderboard",
+            title="🏆 Ranked 2v2 Leaderboard",
             color=discord.Color.gold()
         )
-        
-        # Build the leaderboard display
+
         leaderboard_text = ""
-        for idx, player in enumerate(prp_results, 1):
-            fancy_name = to_fancy_font(player['name'])
-            prp_display = f"{player['prp']:,.2f}" if player['prp'] > 0 else "N/A"
-            
+        for idx, p in enumerate(results, 1):
+            fancy_name = to_fancy_font(p['name'])
+
+            if not p['found']:
+                prp_display = "N/A"
+                kd_display  = "N/A"
+            else:
+                prp_display = f"{p['prp']:,.2f}"
+                kd_display  = f"{p['kd']:.2f}"
+
             if idx == 1:
                 medal = "🥇"
             elif idx == 2:
@@ -547,17 +442,22 @@ async def prp(interaction: discord.Interaction):
                 medal = "🥉"
             else:
                 medal = f"**{idx}.**"
-            
-            leaderboard_text += f"{medal} **{fancy_name}** - `{prp_display}` PRP\n"
-        
+
+            # PRP shown first, then K/D
+            leaderboard_text += (
+                f"{medal} **{fancy_name}**\n"
+                f"┣ PRP: `{prp_display}`\n"
+                f"┗ K/D: `{kd_display}`\n\n"
+            )
+
         embed.description = leaderboard_text
-        embed.set_footer(text="Data fetched from kirka.io profiles | Made by vlaims")
-        
+        embed.set_footer(text="Data fetched from kirka.io | Made by vlaims")
+
         await status_msg.edit(content=None, embed=embed)
         
     except Exception as e:
         print(f"PRP COMMAND ERROR: {e}")
-        await interaction.followup.send(f"Failed to fetch PRP data: {e}")
+        await interaction.followup.send(f"Failed to fetch stats: {e}")
 
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
