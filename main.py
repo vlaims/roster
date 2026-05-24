@@ -1,111 +1,155 @@
 import os
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
 import json
-import re
 
-# 🎨 HELPER FUNCTION: Maps standard characters to a Fancy Bold Serif Font Style
+# ─────────────────────────────────────────────────────────────
+# NOTE FOR RAILWAY DEPLOYMENT
+# Add these to your Railway start command / Dockerfile:
+#   pip install playwright && playwright install chromium --with-deps
+# ─────────────────────────────────────────────────────────────
+
+# 🎨 HELPER: Fancy Bold Serif font mapper
 def to_fancy_font(text):
     normal_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     fancy_chars  = "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
     trans = str.maketrans(normal_chars, fancy_chars)
     return str(text).translate(trans)
 
+
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
-        
+
     async def setup_hook(self):
-        TEST_GUILD = discord.Object(id=841573598799593472) 
+        TEST_GUILD = discord.Object(id=841573598799593472)
         self.tree.copy_global_to(guild=TEST_GUILD)
         await self.tree.sync(guild=TEST_GUILD)
+
 
 bot = MyBot()
 
 
-# ----------------------------------------------------
-# 🌐 HELPER FUNCTION: FETCH PLAYER STATS FROM KIRKA.IO API
-# ----------------------------------------------------
+# ─────────────────────────────────────────────────────────────
+# 🌐 PLAYWRIGHT STAT FETCHER
+# Opens the Kirka.io profile page in a real headless browser,
+# intercepts the XHR response that contains wWNmMWnm, and
+# pulls wWwnNmMW (PRP) and wnWNmwWM (raw KD ÷ 1000).
+# ─────────────────────────────────────────────────────────────
 async def fetch_player_stats(player_id: str):
     """
-    Fetches PRP and KD from the Kirka.io internal player API endpoint.
-    
-    The network response object is named wWNmMWnm and contains:
-      - wWwnNmMW  → PRP  (Ranked 2v2 Points, e.g. 267.96)
-      - wnWNmwWM  → KD raw integer; divide by 1000 to get the real K/D (e.g. 1000 → 1.000, 830 → 0.83)
-    
-    Returns a dict: { 'prp': float, 'kd': float } or None on failure.
+    Returns {'prp': float, 'kd': float} or None on failure.
+
+    How it works:
+      1. Launches a headless Chromium via Playwright.
+      2. Navigates to https://kirka.io/profile/<id>.
+      3. Intercepts every network response while the page loads.
+      4. The game fires an XHR that returns a JSON object whose
+         root key is wWNmMWnm (visible in DevTools → Network).
+      5. Inside that object:
+            wWwnNmMW  →  PRP  (already a float, e.g. 267.96)
+            wnWNmwWM  →  raw KD integer  (e.g. 830 → 0.83)
     """
-    # Strip the # prefix if the ID was stored with one
+    from playwright.async_api import async_playwright
+
     clean_id = player_id.replace('#', '').strip()
     if not clean_id:
         return None
 
-    # ----------------------------------------------------------------
-    # The Kirka.io profile page at /profile/<ID> fires a Fetch/XHR
-    # request to retrieve the player object (visible in DevTools as
-    # wWNmMWnw).  The endpoint pattern observed in the network tab is:
-    #   https://kirka.io/player/<clean_id>
-    # ----------------------------------------------------------------
-    url = f"https://kirka.io/player/{clean_id}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                      'AppleWebKit/537.36 (KHTML, like Gecko) '
-                      'Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': f'https://kirka.io/profile/{clean_id}',
-        'Origin': 'https://kirka.io',
-    }
+    url = f"https://kirka.io/profile/{clean_id}"
+    print(f"[Playwright] Opening {url}")
+
+    captured = {}  # will hold the parsed JSON once we find it
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                if response.status != 200:
-                    print(f"[Kirka] HTTP {response.status} for player {clean_id}")
-                    return None
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",   # avoids /dev/shm issues on Railway
+                    "--disable-gpu",
+                ]
+            )
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
+            )
+            page = await context.new_page()
 
-                # The endpoint returns JSON — the root object is wWNmMWnm
-                data = await response.json(content_type=None)
+            # ── Intercept every response and look for wWNmMWnm ──────────
+            async def on_response(response):
+                # Only inspect JSON-ish responses; skip images/fonts/etc.
+                ct = response.headers.get("content-type", "")
+                if "json" not in ct and "javascript" not in ct:
+                    return
+                try:
+                    body = await response.json()
+                    # The player object sits at the root key wWNmMWnm
+                    if isinstance(body, dict) and "wWNmMWnm" in body:
+                        captured["data"] = body["wWNmMWnm"]
+                        print(f"[Playwright] Captured wWNmMWnm for {clean_id}")
+                except Exception:
+                    pass  # not JSON or wrong shape — skip silently
 
-                # ── Pull the obfuscated field names ──────────────────────────
-                # wWNmMWnm is the root wrapper; navigate into it
-                player_obj = data.get('wWNmMWnm', data)  # fall back to root if already unwrapped
+            page.on("response", on_response)
 
-                # PRP: wWwnNmMW
-                prp_raw = player_obj.get('wWwnNmMW')
-                # KD:  wnWNmwWM  (raw integer → divide by 1000)
-                kd_raw  = player_obj.get('wnWNmwWM')
+            # Navigate and wait for network to go quiet (up to 20 s)
+            try:
+                await page.goto(url, wait_until="networkidle", timeout=25_000)
+            except Exception as e:
+                print(f"[Playwright] goto timed-out or errored ({e}), checking captured data anyway")
 
-                if prp_raw is None and kd_raw is None:
-                    print(f"[Kirka] Fields not found in response for {clean_id}. Keys: {list(player_obj.keys())}")
-                    return None
+            # Give a short extra window in case networkidle fired too early
+            if "data" not in captured:
+                await asyncio.sleep(3)
 
-                prp = float(prp_raw) if prp_raw is not None else 0.0
-                kd  = float(kd_raw)  / 1000.0 if kd_raw  is not None else 0.0
+            await browser.close()
 
-                print(f"[Kirka] {clean_id} → PRP={prp}, KD={kd}")
-                return {'prp': prp, 'kd': kd}
+        if "data" not in captured:
+            print(f"[Playwright] No wWNmMWnm data captured for {clean_id}")
+            return None
+
+        player_obj = captured["data"]
+
+        # ── Extract the two fields ───────────────────────────────────────
+        prp_raw = player_obj.get("wWwnNmMW")   # PRP  – already a float
+        kd_raw  = player_obj.get("wnWNmwWM")   # KD   – raw int ÷ 1000
+
+        if prp_raw is None and kd_raw is None:
+            print(f"[Playwright] Fields missing. Available keys: {list(player_obj.keys())}")
+            return None
+
+        prp = float(prp_raw) if prp_raw is not None else 0.0
+        kd  = float(kd_raw)  / 1000.0 if kd_raw is not None else 0.0
+
+        print(f"[Playwright] {clean_id} → PRP={prp}, KD={kd}")
+        return {"prp": prp, "kd": kd}
 
     except Exception as e:
-        print(f"[Kirka] Error fetching stats for {clean_id}: {e}")
+        print(f"[Playwright] Fatal error for {clean_id}: {e}")
         return None
 
 
-# ----------------------------------------------------
-# 📄 PAGINATION VIEW: HANDLES ROSTER PAGES (<-- -->)
-# ----------------------------------------------------
+# ─────────────────────────────────────────────────────────────
+# 📄 PAGINATION VIEW
+# ─────────────────────────────────────────────────────────────
 class RosterPaginationView(discord.ui.View):
     def __init__(self, pages: list, total_players: int):
         super().__init__(timeout=180)
         self.pages = pages
         self.total_players = total_players
         self.current_page = 0
-        
+
         self.prev_page_btn.disabled = True
         if len(self.pages) <= 1:
             self.next_page_btn.disabled = True
@@ -140,9 +184,9 @@ class RosterPaginationView(discord.ui.View):
         await interaction.edit_original_response(embed=self.create_embed(), view=self)
 
 
-# ----------------------------------------------------
-# 🔘 INTERACTIVE PANEL: ADMIN APPROVAL BUTTONS
-# ----------------------------------------------------
+# ─────────────────────────────────────────────────────────────
+# 🔘 ADMIN APPROVAL BUTTONS
+# ─────────────────────────────────────────────────────────────
 class ApplicationApprovalView(discord.ui.View):
     def __init__(self, name: str, player_id: str, discord_handle: str):
         super().__init__(timeout=None)
@@ -153,10 +197,10 @@ class ApplicationApprovalView(discord.ui.View):
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, custom_id="approve_btn")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        
+
         supabase_url = os.environ.get('SUPABASE_URL')
         supabase_key = os.environ.get('SUPABASE_KEY')
-        
+
         target_endpoint = f"{supabase_url.rstrip('/')}/rest/v1/roster"
         headers = {
             "apikey": supabase_key,
@@ -178,7 +222,7 @@ class ApplicationApprovalView(discord.ui.View):
                         embed.add_field(name="Name", value=f"`{self.name}`", inline=True)
                         embed.add_field(name="Kirka ID", value=f"`{self.player_id}`", inline=True)
                         embed.add_field(name="Approved by", value=interaction.user.mention, inline=False)
-                        
+
                         guild = interaction.guild
                         if guild:
                             member = discord.utils.get(guild.members, name=self.discord_handle)
@@ -189,7 +233,7 @@ class ApplicationApprovalView(discord.ui.View):
                                     await member.add_roles(kiss_role)
                                 if applicator_role:
                                     await member.remove_roles(applicator_role)
-                                    
+
                         await interaction.edit_original_response(embed=embed, view=None)
                     else:
                         await interaction.followup.send(f"Failed to insert row (HTTP: `{response.status}`)", ephemeral=True)
@@ -199,11 +243,11 @@ class ApplicationApprovalView(discord.ui.View):
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red, custom_id="decline_btn")
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        
+
         embed = discord.Embed(title="Application Declined", color=discord.Color.red())
         embed.add_field(name="Character Name", value=f"`{self.name}`", inline=True)
         embed.add_field(name="Declined by", value=interaction.user.mention, inline=False)
-        
+
         guild = interaction.guild
         if guild:
             member = discord.utils.get(guild.members, name=self.discord_handle)
@@ -212,20 +256,20 @@ class ApplicationApprovalView(discord.ui.View):
                     await member.send("Your application got rejected your a fucking chud get better 😂😂😂")
                 except discord.Forbidden:
                     print(f"Could not send DM to {self.discord_handle} (DMs locked or blocked)")
-        
+
         await interaction.edit_original_response(embed=embed, view=None)
 
 
-# ----------------------------------------------------
-# COMMAND 1: THE MEMBERS ROSTER LOOKUP (PAGINATED & SORTED)
-# ----------------------------------------------------
+# ─────────────────────────────────────────────────────────────
+# COMMAND 1: /members
+# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="members", description="Previews all registered data from the Supabase clan roster")
 async def members(interaction: discord.Interaction):
     await interaction.response.defer()
-    
+
     supabase_url = os.environ.get('SUPABASE_URL')
     supabase_key = os.environ.get('SUPABASE_KEY')
-    
+
     if not supabase_url or not supabase_key:
         await interaction.followup.send("Error: Supabase credentials are missing in Railway Environment Variables.")
         return
@@ -238,16 +282,16 @@ async def members(interaction: discord.Interaction):
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(target_endpoint, headers=headers) as response:
                 if response.status != 200:
-                    await interaction.followup.send(f"Error communicating with Supabase database. (Code: `{response.status}`)")
+                    await interaction.followup.send(f"Error communicating with Supabase. (Code: `{response.status}`)")
                     return
                 raw_data = await response.json()
-                
+
         if not raw_data or not isinstance(raw_data, list):
             await interaction.followup.send("Connection successful! However, your Supabase roster table is currently empty.")
             return
 
         total_players = len(raw_data)
-        
+
         vlaims_record = None
         other_records = []
         for item in raw_data:
@@ -255,7 +299,7 @@ async def members(interaction: discord.Interaction):
                 vlaims_record = item
             else:
                 other_records.append(item)
-                
+
         sorted_dataset = []
         if vlaims_record:
             sorted_dataset.append(vlaims_record)
@@ -263,28 +307,30 @@ async def members(interaction: discord.Interaction):
 
         all_lines = []
         for index, item in enumerate(sorted_dataset, 1):
-            raw_name = item.get('name', 'Unknown')
+            raw_name    = item.get('name', 'Unknown')
             discord_user = item.get('discord_handle', 'N/A')
-            player_id = item.get('player_id', 'N/A')
-            fancy_name = to_fancy_font(raw_name)
-            all_lines.append(f"**{index}. {fancy_name}**\n- # ↳ *ID:* `{player_id}` • *Discord:* `@{discord_user}`")
-            
+            player_id   = item.get('player_id', 'N/A')
+            fancy_name  = to_fancy_font(raw_name)
+            all_lines.append(
+                f"**{index}. {fancy_name}**\n"
+                f"- # ↳ *ID:* `{player_id}` • *Discord:* `@{discord_user}`"
+            )
+
         pages_content = []
         for i in range(0, len(all_lines), 5):
-            chunk = all_lines[i:i+5]
-            pages_content.append("\n".join(chunk))
-            
+            pages_content.append("\n".join(all_lines[i:i+5]))
+
         view = RosterPaginationView(pages=pages_content, total_players=total_players)
         await interaction.followup.send(embed=view.create_embed(), view=view)
-        
+
     except Exception as e:
         print(f"SUPABASE FETCH ERROR: {e}")
         await interaction.followup.send("Failed to parse data from your Supabase cloud repository.")
 
 
-# ----------------------------------------------------
-# COMMAND 2: THE /REGISTER COMMAND WITH CHANNEL GATING
-# ----------------------------------------------------
+# ─────────────────────────────────────────────────────────────
+# COMMAND 2: /register
+# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="register", description="Apply to join the clan")
 @app_commands.describe(name="Your name", player_id="Your in-game ID")
 async def register(interaction: discord.Interaction, name: str, player_id: str):
@@ -293,9 +339,9 @@ async def register(interaction: discord.Interaction, name: str, player_id: str):
         return
 
     await interaction.response.defer(ephemeral=True)
-    
+
     logs_channel = discord.utils.get(interaction.guild.text_channels, name="application-logs")
-    admin_role = discord.utils.get(interaction.guild.roles, name="smooch")
+    admin_role   = discord.utils.get(interaction.guild.roles, name="smooch")
 
     if not logs_channel:
         await interaction.followup.send("Logs channel not found.", ephemeral=True)
@@ -315,9 +361,9 @@ async def register(interaction: discord.Interaction, name: str, player_id: str):
     await interaction.followup.send("Application sent to administrators.", ephemeral=True)
 
 
-# ----------------------------------------------------
-# COMMAND 3: THE ADMIN /KICK REMOVAL COMMAND
-# ----------------------------------------------------
+# ─────────────────────────────────────────────────────────────
+# COMMAND 3: /kick
+# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="kick", description="Remove a player from the roster")
 @app_commands.default_permissions(administrator=True)
 async def kick(interaction: discord.Interaction, name: str):
@@ -326,11 +372,11 @@ async def kick(interaction: discord.Interaction, name: str):
     supabase_key = os.environ.get('SUPABASE_KEY')
     target_endpoint = f"{supabase_url.rstrip('/')}/rest/v1/roster?name=eq.{name}"
     headers = {
-        "apikey": supabase_key, 
-        "Authorization": f"Bearer {supabase_key}", 
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
         "Prefer": "return=representation"
     }
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.delete(target_endpoint, headers=headers) as response:
@@ -339,7 +385,6 @@ async def kick(interaction: discord.Interaction, name: str):
                     if not deleted_data:
                         await interaction.followup.send(f"Could not find a player named `{name}` in the database.")
                         return
-                    
                     fancy_kicked_name = to_fancy_font(name)
                     embed = discord.Embed(
                         title="Player Removed",
@@ -353,16 +398,16 @@ async def kick(interaction: discord.Interaction, name: str):
         await interaction.followup.send(f"Critical error: {e}")
 
 
-# ----------------------------------------------------
-# COMMAND 4: CHECK PRP & KD FOR ALL ROSTER PLAYERS
-# ----------------------------------------------------
+# ─────────────────────────────────────────────────────────────
+# COMMAND 4: /prp  — Leaderboard with PRP then K/D per player
+# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="prp", description="Check Ranked 2v2 Points and K/D for all roster players")
 async def prp(interaction: discord.Interaction):
     await interaction.response.defer()
-    
+
     supabase_url = os.environ.get('SUPABASE_URL')
     supabase_key = os.environ.get('SUPABASE_KEY')
-    
+
     if not supabase_url or not supabase_key:
         await interaction.followup.send("Error: Supabase credentials are missing.")
         return
@@ -377,45 +422,42 @@ async def prp(interaction: discord.Interaction):
                     await interaction.followup.send(f"Database error. (Code: `{response.status}`)")
                     return
                 roster_data = await response.json()
-                
+
         if not roster_data:
             await interaction.followup.send("No players found in the roster.")
             return
 
+        total = len(roster_data)
         status_msg = await interaction.followup.send(
-            f"🔍 Fetching stats for {len(roster_data)} players... This may take a moment."
+            f"🔍 Launching browser to fetch stats for {total} players… this takes ~15–20 s per player."
         )
 
         results = []
         for idx, player in enumerate(roster_data, 1):
             player_id = player.get('player_id', '').strip()
             name      = player.get('name', 'Unknown')
-            
-            if idx % 5 == 0:
+
+            # Update status every 3 players so the user sees progress
+            if idx % 3 == 1:
                 try:
-                    await status_msg.edit(content=f"🔍 Fetching stats... ({idx}/{len(roster_data)} players)")
+                    await status_msg.edit(
+                        content=f"🔍 Fetching stats… ({idx}/{total}) — currently checking **{name}**"
+                    )
                 except Exception:
                     pass
 
             if player_id:
                 stats = await fetch_player_stats(player_id)
                 results.append({
-                    'name':      name,
-                    'player_id': player_id,
-                    'prp':       stats['prp'] if stats else 0.0,
-                    'kd':        stats['kd']  if stats else 0.0,
-                    'found':     stats is not None,
+                    'name':  name,
+                    'prp':   stats['prp'] if stats else 0.0,
+                    'kd':    stats['kd']  if stats else 0.0,
+                    'found': stats is not None,
                 })
             else:
-                results.append({
-                    'name':      name,
-                    'player_id': 'N/A',
-                    'prp':       0.0,
-                    'kd':        0.0,
-                    'found':     False,
-                })
+                results.append({'name': name, 'prp': 0.0, 'kd': 0.0, 'found': False})
 
-        # Sort by PRP highest first
+        # Sort by PRP, highest first
         results.sort(key=lambda x: x['prp'], reverse=True)
 
         embed = discord.Embed(
@@ -425,25 +467,12 @@ async def prp(interaction: discord.Interaction):
 
         leaderboard_text = ""
         for idx, p in enumerate(results, 1):
-            fancy_name = to_fancy_font(p['name'])
+            fancy_name  = to_fancy_font(p['name'])
+            prp_display = f"{p['prp']:,.2f}" if p['found'] else "N/A"
+            kd_display  = f"{p['kd']:.2f}"   if p['found'] else "N/A"
 
-            if not p['found']:
-                prp_display = "N/A"
-                kd_display  = "N/A"
-            else:
-                prp_display = f"{p['prp']:,.2f}"
-                kd_display  = f"{p['kd']:.2f}"
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, f"**{idx}.**")
 
-            if idx == 1:
-                medal = "🥇"
-            elif idx == 2:
-                medal = "🥈"
-            elif idx == 3:
-                medal = "🥉"
-            else:
-                medal = f"**{idx}.**"
-
-            # PRP shown first, then K/D
             leaderboard_text += (
                 f"{medal} **{fancy_name}**\n"
                 f"┣ PRP: `{prp_display}`\n"
@@ -451,10 +480,10 @@ async def prp(interaction: discord.Interaction):
             )
 
         embed.description = leaderboard_text
-        embed.set_footer(text="Data fetched from kirka.io | Made by vlaims")
+        embed.set_footer(text="Data fetched live from kirka.io via headless browser | Made by vlaims")
 
         await status_msg.edit(content=None, embed=embed)
-        
+
     except Exception as e:
         print(f"PRP COMMAND ERROR: {e}")
         await interaction.followup.send(f"Failed to fetch stats: {e}")
