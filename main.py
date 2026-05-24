@@ -3,6 +3,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
+from bs4 import BeautifulSoup
 
 # 🎨 HELPER FUNCTION: Maps standard characters to a Fancy Bold Serif Font Style
 def to_fancy_font(text):
@@ -24,6 +25,44 @@ class MyBot(commands.Bot):
         await self.tree.sync(guild=TEST_GUILD)
 
 bot = MyBot()
+
+
+# ----------------------------------------------------
+# 🌐 HELPER FUNCTION: FETCH PRP DATA FROM KIRKA.IO
+# ----------------------------------------------------
+async def fetch_prp_data(player_id: str):
+    """Scrapes the PRP (Ranked 2v2 Point) from a Kirka.io profile"""
+    url = f"https://kirka.io/profile/{player_id}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    return None
+                
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                # Find the PRP value in the stats section
+                # Looking for the "prp" stat which shows the ranked 2v2 points
+                stats_elements = soup.find_all('div', class_='stat')
+                
+                for stat in stats_elements:
+                    # Check if this stat contains PRP data
+                    text = stat.get_text(strip=True)
+                    if 'prp' in text.lower():
+                        # Extract the numeric value
+                        value = ''.join(filter(str.isdigit, text))
+                        if value:
+                            return int(value)
+                
+                return None
+    except Exception as e:
+        print(f"Error fetching PRP for {player_id}: {e}")
+        return None
 
 
 # ----------------------------------------------------
@@ -293,5 +332,84 @@ async def kick(interaction: discord.Interaction, name: str):
                     await interaction.followup.send(f"Failed to delete player. (HTTP Error: `{response.status}`)")
     except Exception as e:
         await interaction.followup.send(f"Critical error: {e}")
+
+
+# ----------------------------------------------------
+# COMMAND 4: CHECK PRP (RANKED 2V2 POINTS) FOR ALL ROSTER PLAYERS
+# ----------------------------------------------------
+@bot.tree.command(name="prp", description="Check Ranked 2v2 Points for all roster players")
+async def prp(interaction: discord.Interaction):
+    await interaction.response.defer()
+    
+    supabase_url = os.environ.get('SUPABASE_URL')
+    supabase_key = os.environ.get('SUPABASE_KEY')
+    
+    if not supabase_url or not supabase_key:
+        await interaction.followup.send("Error: Supabase credentials are missing.")
+        return
+
+    # Fetch all players from roster
+    target_endpoint = f"{supabase_url.rstrip('/')}/rest/v1/roster?select=*"
+    headers = {"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(target_endpoint, headers=headers) as response:
+                if response.status != 200:
+                    await interaction.followup.send(f"Database error. (Code: `{response.status}`)")
+                    return
+                roster_data = await response.json()
+                
+        if not roster_data:
+            await interaction.followup.send("No players found in the roster.")
+            return
+
+        # Fetch PRP data for each player
+        prp_results = []
+        for player in roster_data:
+            player_id = player.get('player_id', '').strip()
+            name = player.get('name', 'Unknown')
+            
+            if player_id:
+                prp_value = await fetch_prp_data(player_id)
+                prp_results.append({
+                    'name': name,
+                    'player_id': player_id,
+                    'prp': prp_value if prp_value is not None else 0
+                })
+            else:
+                prp_results.append({
+                    'name': name,
+                    'player_id': 'N/A',
+                    'prp': 0
+                })
+        
+        # Sort by PRP (highest first)
+        prp_results.sort(key=lambda x: x['prp'], reverse=True)
+        
+        # Create embed with results
+        embed = discord.Embed(
+            title="🏆 Ranked 2v2 Points Leaderboard",
+            description="PRP standings for all roster players",
+            color=discord.Color.gold()
+        )
+        
+        # Build the leaderboard display
+        leaderboard_text = ""
+        for idx, player in enumerate(prp_results, 1):
+            fancy_name = to_fancy_font(player['name'])
+            prp_display = f"{player['prp']:,}" if player['prp'] > 0 else "N/A"
+            medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"**{idx}.**"
+            leaderboard_text += f"{medal} **{fancy_name}** - `{prp_display}` PRP\n"
+        
+        embed.description = leaderboard_text
+        embed.set_footer(text="Data fetched from kirka.io profiles | Made by vlaims")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        print(f"PRP COMMAND ERROR: {e}")
+        await interaction.followup.send(f"Failed to fetch PRP data: {e}")
+
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
