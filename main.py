@@ -3,7 +3,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
-import json
 
 # 🎨 HELPER: Fancy Bold Serif font mapper
 def to_fancy_font(text):
@@ -11,6 +10,20 @@ def to_fancy_font(text):
     fancy_chars  = "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
     trans = str.maketrans(normal_chars, fancy_chars)
     return str(text).translate(trans)
+
+
+# 🔑 In-memory token store — persists for the life of the bot process.
+# Updated via /refreshtoken without needing to redeploy.
+_kirka_token: str = os.environ.get('KIRKA_TOKEN', '').strip()
+
+
+def get_token() -> str:
+    return _kirka_token
+
+
+def set_token(new_token: str):
+    global _kirka_token
+    _kirka_token = new_token.strip()
 
 
 class MyBot(commands.Bot):
@@ -31,17 +44,12 @@ bot = MyBot()
 # ─────────────────────────────────────────────────────────────
 # 🌐 KIRKA.IO STAT FETCHER
 #
-# Hits the internal API directly:
-#   POST https://api2.kirka.io/api/wNmwWMWn/wWWnwmNM
-#   Body: { "wMnw": "<player_id>" }
+# POST https://api2.kirka.io/api/wNmwWMWn/wWWnwmNM
+# Body: { "wMnw": "<player_id>" }
 #
 # Response root key: wWNmMWnm
 #   wWwnNmMW  →  PRP  (float, e.g. 267.96)
 #   wnWNmwWM  →  raw KD integer ÷ 1000  (e.g. 830 → 0.83)
-#
-# Requires KIRKA_TOKEN env var — your Kirka Bearer JWT.
-# Get it from DevTools → Network → wWWnwmNM → Headers →
-# Authorization header value (without the "Bearer " prefix).
 # ─────────────────────────────────────────────────────────────
 async def fetch_player_stats(player_id: str):
     """Returns {'prp': float, 'kd': float} or None on failure."""
@@ -50,9 +58,9 @@ async def fetch_player_stats(player_id: str):
     if not clean_id:
         return None
 
-    token = os.environ.get('KIRKA_TOKEN', '').strip()
+    token = get_token()
     if not token:
-        print("[Kirka] ERROR: KIRKA_TOKEN env var is not set.")
+        print("[Kirka] ERROR: No token set. Use /refreshtoken to add one.")
         return None
 
     url = "https://api2.kirka.io/api/wNmwWMWn/wWWnwmNM"
@@ -71,7 +79,6 @@ async def fetch_player_stats(player_id: str):
             "Chrome/148.0.0.0 Safari/537.36"
         ),
     }
-    # POST body — "wMnw" is the obfuscated player ID field seen in the preview
     payload = {"wMnw": clean_id}
 
     try:
@@ -84,7 +91,7 @@ async def fetch_player_stats(player_id: str):
             ) as response:
 
                 if response.status == 401:
-                    print(f"[Kirka] 401 Unauthorized — KIRKA_TOKEN is expired or invalid.")
+                    print(f"[Kirka] 401 Unauthorized — token is expired. Use /refreshtoken.")
                     return None
 
                 if response.status != 200:
@@ -92,12 +99,10 @@ async def fetch_player_stats(player_id: str):
                     return None
 
                 data = await response.json(content_type=None)
-
-                # Root wrapper is wWNmMWnm
                 player_obj = data.get("wWNmMWnm", data)
 
-                prp_raw = player_obj.get("wWwnNmMW")   # PRP
-                kd_raw  = player_obj.get("wnWNmwWM")   # raw KD ÷ 1000
+                prp_raw = player_obj.get("wWwnNmMW")
+                kd_raw  = player_obj.get("wnWNmwWM")
 
                 if prp_raw is None and kd_raw is None:
                     print(f"[Kirka] Fields not found for {clean_id}. Keys: {list(player_obj.keys())}")
@@ -386,11 +391,10 @@ async def prp(interaction: discord.Interaction):
         await interaction.followup.send("Error: Supabase credentials are missing.")
         return
 
-    # Check token exists before doing anything
-    if not os.environ.get('KIRKA_TOKEN'):
+    if not get_token():
         await interaction.followup.send(
-            "❌ `KIRKA_TOKEN` is not set in Railway environment variables.\n"
-            "Go to DevTools → Network → click `wWWnwmNM` → Headers → copy the `Authorization` value (without `Bearer `) and add it to Railway."
+            "❌ No Kirka token set. Use `/refreshtoken` to add one.\n"
+            "Get it from: DevTools → Network → `wWWnwmNM` → Headers → `Authorization` (paste everything after `Bearer `)"
         )
         return
 
@@ -419,9 +423,7 @@ async def prp(interaction: discord.Interaction):
 
             if idx % 3 == 1:
                 try:
-                    await status_msg.edit(
-                        content=f"🔍 Fetching stats… ({idx}/{total}) — **{name}**"
-                    )
+                    await status_msg.edit(content=f"🔍 Fetching stats… ({idx}/{total}) — **{name}**")
                 except Exception:
                     pass
 
@@ -436,13 +438,9 @@ async def prp(interaction: discord.Interaction):
             else:
                 results.append({'name': name, 'prp': 0.0, 'kd': 0.0, 'found': False})
 
-        # Sort by PRP highest first
         results.sort(key=lambda x: x['prp'], reverse=True)
 
-        embed = discord.Embed(
-            title="🏆 Ranked 2v2 Leaderboard",
-            color=discord.Color.gold()
-        )
+        embed = discord.Embed(title="🏆 Ranked 2v2 Leaderboard", color=discord.Color.gold())
 
         leaderboard_text = ""
         for idx, p in enumerate(results, 1):
@@ -450,7 +448,6 @@ async def prp(interaction: discord.Interaction):
             prp_display = f"{p['prp']:,.2f}" if p['found'] else "N/A"
             kd_display  = f"{p['kd']:.2f}"   if p['found'] else "N/A"
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, f"**{idx}.**")
-
             leaderboard_text += (
                 f"{medal} **{fancy_name}**\n"
                 f"┣ PRP: `{prp_display}`\n"
@@ -459,12 +456,107 @@ async def prp(interaction: discord.Interaction):
 
         embed.description = leaderboard_text
         embed.set_footer(text="Data fetched live from kirka.io | Made by vlaims")
-
         await status_msg.edit(content=None, embed=embed)
 
     except Exception as e:
         print(f"PRP COMMAND ERROR: {e}")
         await interaction.followup.send(f"Failed to fetch stats: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+# COMMAND 5: /refreshtoken — Admin only, updates Kirka JWT in memory
+# ─────────────────────────────────────────────────────────────
+@bot.tree.command(name="refreshtoken", description="Update the Kirka.io Bearer token used to fetch player stats")
+@app_commands.describe(token="Paste your new Bearer token from DevTools (without the 'Bearer ' prefix)")
+@app_commands.default_permissions(administrator=True)
+async def refreshtoken(interaction: discord.Interaction, token: str):
+    # Respond ephemerally immediately — the token must never appear in chat
+    await interaction.response.defer(ephemeral=True)
+
+    token = token.strip()
+
+    # Strip "Bearer " prefix in case the user accidentally included it
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+
+    if not token:
+        await interaction.followup.send("❌ Token was empty after cleaning. Please try again.", ephemeral=True)
+        return
+
+    # Quick sanity check — Kirka JWTs are base64 and will contain dots
+    if token.count('.') < 2:
+        await interaction.followup.send(
+            "⚠️ That doesn't look like a valid JWT (expected 3 dot-separated parts). "
+            "Make sure you copied the full token from the `Authorization` header.",
+            ephemeral=True
+        )
+        return
+
+    # Test the token against the Kirka API before accepting it
+    # Use a known-good player ID (the one visible in the DevTools screenshot)
+    test_url = "https://api2.kirka.io/api/wNmwWMWn/wWWnwmNM"
+    test_headers = {
+        "Authorization":  f"Bearer {token}",
+        "Content-Type":   "application/json",
+        "Accept":         "application/json, text/plain, */*",
+        "Origin":         "https://kirka.io",
+        "Referer":        "https://kirka.io/",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-site",
+        "User-Agent": (
+            "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/148.0.0.0 Safari/537.36"
+        ),
+    }
+    test_payload = {"wMnw": "XMNVRX"}  # test against a known profile
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                test_url,
+                headers=test_headers,
+                json=test_payload,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 401:
+                    await interaction.followup.send(
+                        "❌ Token rejected by Kirka (401 Unauthorized). "
+                        "Make sure you copied a **fresh** token — they expire after ~24 hours.",
+                        ephemeral=True
+                    )
+                    return
+                elif resp.status != 200:
+                    await interaction.followup.send(
+                        f"⚠️ Kirka returned HTTP `{resp.status}` during validation. "
+                        "Token may still work — updating anyway.",
+                        ephemeral=True
+                    )
+                    # Accept it anyway, might be a transient error
+                    set_token(token)
+                    return
+                else:
+                    # Token works — save it
+                    set_token(token)
+
+        # Show only the first 20 and last 6 chars so admins can confirm it changed
+        masked = f"{token[:20]}...{token[-6:]}"
+        embed = discord.Embed(
+            title="✅ Kirka Token Updated",
+            description=(
+                f"Token successfully validated against the Kirka API and saved.\n\n"
+                f"**Token (masked):** `{masked}`\n\n"
+                f"This token will stay active until the bot restarts or you run `/refreshtoken` again.\n"
+                f"Tokens expire after ~24 hours — refresh whenever `/prp` starts returning N/A."
+            ),
+            color=discord.Color.green()
+        )
+        embed.set_footer(text="Only visible to you | Made by vlaims")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error validating token: `{e}`", ephemeral=True)
 
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
