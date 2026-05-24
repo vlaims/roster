@@ -31,8 +31,17 @@ bot = MyBot()
 # 🌐 HELPER FUNCTION: FETCH PRP DATA FROM KIRKA.IO
 # ----------------------------------------------------
 async def fetch_prp_data(player_id: str):
-    """Scrapes the PRP (Ranked 2v2 Point) from a Kirka.io profile"""
-    url = f"https://kirka.io/profile/{player_id}"
+    """Scrapes the PRP (Ranked 2v2 Point) from a Kirka.io profile
+    
+    IMPORTANT: Automatically removes # from player_id if present
+    """
+    # 🚨 CRITICAL: Remove the # symbol from player_id for the URL
+    clean_id = player_id.replace('#', '').strip()
+    
+    if not clean_id:
+        return None
+        
+    url = f"https://kirka.io/profile/{clean_id}"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
@@ -41,6 +50,7 @@ async def fetch_prp_data(player_id: str):
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status != 200:
+                    print(f"Failed to fetch profile for {clean_id}: HTTP {response.status}")
                     return None
                 
                 html = await response.text()
@@ -59,9 +69,11 @@ async def fetch_prp_data(player_id: str):
                         if value:
                             return int(value)
                 
+                # If not found in stats, try alternative parsing methods
+                print(f"PRP not found for {clean_id} in standard location")
                 return None
     except Exception as e:
-        print(f"Error fetching PRP for {player_id}: {e}")
+        print(f"Error fetching PRP for {clean_id}: {e}")
         return None
 
 
@@ -371,6 +383,7 @@ async def prp(interaction: discord.Interaction):
             name = player.get('name', 'Unknown')
             
             if player_id:
+                # 🚨 The fetch_prp_data function now automatically removes the #
                 prp_value = await fetch_prp_data(player_id)
                 prp_results.append({
                     'name': name,
