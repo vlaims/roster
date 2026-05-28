@@ -2,7 +2,6 @@ import os
 import sys
 import discord
 from discord import app_commands
-from discord import app_commands
 from discord.ext import commands, tasks
 import aiohttp
 import random
@@ -95,8 +94,6 @@ async def add_xp(name, amount, reason="Activity"):
         await update_roster_member(name, {"xp": new_xp, "level": new_lvl})
         # Clan XP Logic
         clan_xp_gain = int(amount / 2)
-        # In a real app, we'd have a separate `clans` table.
-        # For now, we just log it or increment a global clan score counter.
         log_action("XP", name, f"+{amount} XP. Level Up? {new_lvl > m.get('level', 1)}")
 
 async def add_points(name, amount, reason):
@@ -194,26 +191,23 @@ class MyBot(commands.Bot):
                 url = banners.get(current_rank, "https://discord.com/assets/1234.png") # Default
 
                 # Update Server Banner (Requires Manage Server Permission)
-                if interaction.guild:
+                # Note: Cannot access interaction.guild here directly as it's a background task
+                # This requires fetching the guild object manually
+                guild = bot.get_guild(841573598799593472) # Replace with your Guild ID
+                if guild:
                     try:
-                        await interaction.guild.edit(banner=url)
+                        await guild.edit(banner=url)
                         print(f"Updated banner to Rank {current_rank}")
-                except:
-                    pass
+                    except Exception as e:
+                        print(f"Failed to update banner: {e}")
         except Exception as e:
             print(f"Dynamic Banner Error: {e}")
 
     @tasks.loop(time=time(hour=0, minute=0)) # Midnight
     async def birthday_checker(self):
         """Checks for birthdays."""
-        roster = get_cached("full_roster")
-        if not roster:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(supabase_endpoint("roster?select=*"), headers=supabase_headers()) as resp:
-                    if resp.status == 200:
-                        roster = await resp.json()
-            # In a real app, you'd check 'dob' column. Here we mock it for recent joins.
-            pass
+        # Mock implementation
+        pass
 
     @dynamic_banner_task.before_loop
     async def before_banner(self):
@@ -389,7 +383,7 @@ class ScrimView(discord.ui.View):
     def get_embed(self):
         return discord.Embed(title="⚔️ Live Scrim", color=discord.Color.red()).add_field(name="Team A", value=self.score_a).add_field(name="Team B", value=self.score_b)
 
-class TicketView(discord.ui.Modal):
+class TicketView(discord.ui.View): # Changed from Modal to View because it uses buttons
     def __init__(self, channel):
         super().__init__(timeout=None)
         self.channel = channel
@@ -405,7 +399,7 @@ class TicketView(discord.ui.Modal):
         self.votes["Yes"] += 1
         await i.response.edit_message(content=f"👍 Yes: {self.votes['Yes']}\n👎 No: {self.votes['No']}", view=self)
 
-    @discord.ui.button(emoji="👎", style=discord.ui.Button.red)
+    @discord.ui.button(emoji="👎", style=discord.ButtonStyle.red)
     async def no_vote(self, i, b):
         self.votes["No"] += 1
         await i.response.edit_message(content=f"👍 Yes: {self.votes['Yes']}\n👎 No: {self.votes['No']}", view=self)
@@ -483,7 +477,7 @@ async def quotes(i: discord.Interaction, quote: str):
     await i.response.send_message(f"💬 Saved quote: \"{quote}\"")
 
 @bot.tree.command(name="memories", description="View clan memories")
-async def memories(i: discord.Command(interaction):
+async def memories(i: discord.Interaction):
     # Fetch from memories table (Mocked here)
     mems = ["Vlaims carried the 2v2", "Pengu sat on snake for 5 hours", "Castiels inventory items are fraud."]
     await i.followup.send(f"🗃️ **Clan Memories:**\n\n{chr(10).join([f"- {m}" for m in mems])}")
@@ -494,9 +488,9 @@ async def motto(i: discord.Interaction, motto: str):
     await update_roster_member(i.user.name, {"motd": motto})
     await i.response.send_message(f"✅ Motto updated to: \"{motto}\"")
 
-@bot.treecommand(name="nickname_history", description="View past nicknames")
+@bot.tree.command(name="nickname_history", description="View past nicknames")
 async def nickname_history(i: discord.Interaction):
-    m = await get_roster(i.user.name)
+    m = await get_roster_member(i.user.name)
     if m and m.get('nickname_history'):
         hist = "\n".join([f"{idx+1}. {h}" for idx, h in m.get('nickname_history', [])])
         await i.response.send_message(f"📝 **{i.user.display_name}'s Nicknames:**\n{hist}")
@@ -540,7 +534,7 @@ async def checkin(i: discord.Interaction):
     await i.followup.send(f"✅ Checked in! (Streak: `{current_streak}` 🔥)")
 
 @bot.tree.command(name="vc_tracker", description="Current VC Status")
-async def vc_tracker(i: discord.Icon):
+async def vc_tracker(i: discord.Interaction):
     vc_state = "🟢 **VC Status:** Offline"
     active_channels = [ch for ch in bot.guild.voice_channels if ch.members]
     
@@ -571,7 +565,7 @@ async def duo(i: discord.Interaction):
         return await i.response.send_message("Need at least 2 people online to start a duo.")
     
     p1, p2 = random.sample(online, 2)
-    await i.response.send_message(f"🤝 Today's Duo: {p1.mention} + " & p2.mention})
+    await i.response.send_message(f"🤝 Today's Duo: {p1.mention} + {p2.mention}")
 
 @bot.tree.command(name="totd", description="Target of the day")
 async def totd(i: discord.Interaction):
@@ -591,12 +585,12 @@ async def clown(i: discord.Interaction):
 
 @bot.tree.command(name="washed", description="Check your 'Glaze' level")
 async def washed(i: discord.Interaction):
-    m = await get_roster(i.user.name)
+    m = await get_roster_member(i.user.name)
     # Mock glaze level based on matches lost
     await i.response.send_message(f"💧 **Glaze Level:** {m.get('glaze', 0)}%")
 
 @bot.tree.command(name="ego")
-async def ego(i: discord.ChatInteraction):
+async def ego(i: discord.Interaction):
     # Check for 'trash talk' in logs
     await i.response.send_message("💅 **Ego:** Your ego is massive.")
 
@@ -606,11 +600,11 @@ async def clanlore(i: discord.Interaction):
     lines = [
         "2023-05-10: Kiss Founded by Vlaims.",
         "2023-06-01: Vlaims touched grass for the first time.",
-        "2023-08-15: Kiss defeated VOID in a CW."
+        "2023-08-15: Kiss defeated VOID in a CW.",
         "2023-10-31: Vlaims got 1m points.",
         "Legendary Moment: Pengu clutched the 1v1."
     ]
-    pages = ["\n".join(lines[i:i+3] for i in range(0, len(lines), 3)]
+    pages = ["\n".join(lines[i:i+3]) for i in range(0, len(lines), 3)]
     view = PaginationView(pages, "📜 Kiss Lore", "Legendary Moments")
     await i.response.send_message(embed=view.create_embed(), view=view)
 
@@ -627,7 +621,7 @@ async def rivals(i: discord.Interaction):
     await i.followup.send(embed=discord.Embed(title="🏆 Rivals", description=desc))
 
 @bot.tree.command(name="newspaper", description="Weekly clan newspaper")
-async def newpaper(i: discord.Interaction):
+async def newspaper(i: discord.Interaction):
     # Mock content
     headlines = [
         "📰 **Drama Alert**: Vlaims was caught selling passwords!",
@@ -662,12 +656,13 @@ async def gamble(i: discord.Interaction, amount: int):
 # EVENTS
 # ─────────────────────────────────────────────────────────────
 @bot.event
-async def on_member(member):
+async def on_member_join(member):
     # Send animated welcome message
     welcome_msg = (
         f"Welcome {member.mention} to Kiss Clan! 🌿\n"
         f"Check your intro with `/introduce`.\n"
         f"Check your status with `/status`."
+    )
     await member.send(welcome_msg)
 
 @bot.event
