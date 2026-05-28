@@ -249,13 +249,13 @@ class LootboxView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
     
-    @discord.ui.button(label="📦 Open (500 pts)", style=discord.ButtonStyle.blurple)
+    @discord.ui.button(label="📦 Open (5000 pts)", style=discord.ButtonStyle.blurple)
     async def open_box(self, i, b):
-        await i.response.send_message(f"📦 You got: {random.choice(['100 pts', 'Nothing', 'VIP Role'])}!")
+        await i.response.send_message(f"📦 You got: {random.choice(['10000 pts', 'Nothing', 'VIP Role'])}!")
     
-    @discord.ui.button(label="📦 Legendary (2000 pts)", style=discord.ButtonStyle.gold)
+    @discord.ui.button(label="📦 Legendary (2000 pts)", style=discord.ButtonStyle.green)
     async def open_legendary(self, i, b):
-        await i.response.send_message(f"📦 You got: {random.choice(['1000 pts', 'Custom Nickname', 'Nothing'])}!")
+        await i.response.send_message(f"📦 You got: {random.choice(['10000 pts', 'Custom Nickname', 'Nothing'])}!")
 
 class SnakeDraftView(discord.ui.View):
     def __init__(self, pool, c1, c2):
