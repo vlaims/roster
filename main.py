@@ -2,6 +2,7 @@ import os
 import sys
 import discord
 from discord import app_commands
+from discord.ui import ButtonStyle  # <--- ADDED THIS
 from discord.ext import commands, tasks
 import aiohttp
 import random
@@ -30,28 +31,7 @@ WEEKLY_RESET_DAY = 0
 
 ACTIVE_EVENTS = {}
 ACTIVE_CHALLENGES = {}
-MATCHMAKING = [] # Simple list for queue
-
-# ─────────────────────────────────────────────────────────────
-# UTILS
-# ─────────────────────────────────────────────────────────────
-def kirka_headers():
-    return {"ApiKey": KIRKA_API_KEY, "Accept": "application/json", "Content-Type": "application/json"}
-
-def supabase_headers():
-    return {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
-
-def supabase_endpoint(path: str) -> str:
-    return f"{SUPABASE_URL.rstrip('/')}/rest/v1/{path}"
-
-def to_fancy_font(text):
-    normal = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    fancy  = "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟒𝟓𝟔𝟕𝟕𝟖𝟗"
-    return str(text).translate(str.maketrans(normal, fancy))
-
-def get_tier_rank(tier: str) -> int:
-    try: return TIER_ORDER.index(tier.strip())
-    except ValueError: return 999
+MATCHMAKING = []
 
 # ─────────────────────────────────────────────────────────────
 # AI & CALCULATION HELPERS
@@ -209,24 +189,36 @@ class ChallengeView(discord.ui.View):
     def __init__(self, challenger, opponent, bet):
         super().__init__(timeout=300)
         self.challenger = challenger; self.opponent = opponent; self.bet = bet
+    
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
     async def accept(self, i, b):
         if i.user.id != self.opponent.id: return
-        await i.response.send_message(f"⚔️ Accepted! {self.challenger.mention} vs {self.opponent.mention}."); self.stop()
+        await i.response.send_message(f"⚔️ Accepted! {self.challenger.mention} vs {self.opponent.mention}.")
+        self.stop()
 
 class PollView(discord.ui.View):
     def __init__(self, question):
-        super().__init__(timeout=None); self.question = question; self.votes = {"Yes": 0, "No": 0}
+        super().__init__(timeout=None)
+        self.question = question
+        self.votes = {"Yes": 0, "No": 0}
+
     async def update(self, i, choice):
         self.votes[choice] += 1
         await i.response.edit_message(content=f"**{self.question}**\n👍 Yes: {self.votes['Yes']}\n👎 No: {self.votes['No']}")
-    @discord.ui.button(emoji="👍", style=discord.ButtonStyle.green) async def yes(self,i,b): await self.update(i,"Yes")
-    @discord.ui.button(emoji="👎", style=discord.ButtonStyle.red) async def no(self,i,b): await self.update(i,"No")
+
+    @discord.ui.button(emoji="👍", style=discord.ButtonStyle.green)
+    async def yes(self, i, b):
+        await self.update(i, "Yes")
+        
+    @discord.ui.button(emoji="👎", style=discord.ButtonStyle.red)
+    async def no(self, i, b):
+        await self.update(i, "No")
 
 class ApplicationApprovalView(discord.ui.View):
     def __init__(self, name, player_id, discord_handle):
         super().__init__(timeout=None)
         self.name, self.player_id, self.discord_handle = name, player_id, discord_handle
+    
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, custom_id="approve_btn")
     async def approve(self, i, b):
         await i.response.defer()
@@ -234,51 +226,77 @@ class ApplicationApprovalView(discord.ui.View):
         async with aiohttp.ClientSession() as s:
             async with s.post(supabase_endpoint("roster"), headers=supabase_headers(), json=payload) as resp:
                 if resp.status in [200, 201]:
-                    embed = discord.Embed(title="Application Approved", color=discord.Color.green()).add_field(name="Name", value=f"`{self.name}`").add_field(name="Kirka ID", value=f"`{self.player_id}`").add_field(name="Approved by", value=i.user.mention)
+                    e = discord.Embed(title="Application Approved", color=discord.Color.green()).add_field(name="Name", value=f"`{self.name}`").add_field(name="Kirka ID", value=f"`{self.player_id}`").add_field(name="Approved by", value=i.user.mention)
                     if i.guild:
                         m = discord.utils.get(i.guild.members, name=self.discord_handle)
                         if m:
                             if k:=discord.utils.get(i.guild.roles, name="kiss"): await m.add_roles(k)
                             if a:=discord.utils.get(i.guild.roles, name="applicator"): await m.remove_roles(a)
-                    await i.edit_original_response(embed=embed, view=None)
+                    await i.edit_original_response(embed=e, view=None)
+    
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red, custom_id="decline_btn")
     async def decline(self, i, b):
         await i.response.defer()
-        embed = discord.Embed(title="Application Declined", color=discord.Color.red()).add_field(name="Name", value=f"`{self.name}`")
+        e = discord.Embed(title="Application Declined", color=discord.Color.red()).add_field(name="Name", value=f"`{self.name}`")
         if i.guild:
             m = discord.utils.get(i.guild.members, name=self.discord_handle)
             if m:
                 if d:=discord.utils.get(i.guild.roles, name="declined"): await m.add_roles(d)
                 if a:=discord.utils.get(i.guild.roles, name="applicator"): await m.remove_roles(a)
-        await i.edit_original_response(embed=embed, view=None)
+        await i.edit_original_response(embed=e, view=None)
 
 class LootboxView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=None)
+    def __init__(self):
+        super().__init__(timeout=None)
+    
     @discord.ui.button(label="📦 Open (500 pts)", style=discord.ButtonStyle.blurple)
     async def open_box(self, i, b):
         await i.response.send_message(f"📦 You got: {random.choice(['100 pts', 'Nothing', 'VIP Role'])}!")
+    
     @discord.ui.button(label="📦 Legendary (2000 pts)", style=discord.ButtonStyle.gold)
     async def open_legendary(self, i, b):
         await i.response.send_message(f"📦 You got: {random.choice(['1000 pts', 'Custom Nickname', 'Nothing'])}!")
 
 class SnakeDraftView(discord.ui.View):
     def __init__(self, pool, c1, c2):
-        super().__init__(timeout=300); self.pool = pool; self.c1 = c1; self.c2 = c2; self.turn = c1
-        self.team1, self.team2 = [c1], [c2]; self.update_ui()
+        super().__init__(timeout=300)
+        self.pool = pool
+        self.c1 = c1
+        self.c2 = c2
+        self.turn = c1
+        self.team1 = [c1]
+        self.team2 = [c2]
+        self.update_ui()
+
     def update_ui(self):
-        e = discord.Embed(title="🐍 Snake Draft").add_field(name="Team 1", value="\n".join([u.mention for u in self.team1])).add_field(name="Team 2", value="\n".join([u.mention for u in self.team2])).add_field(name="Pool", value="\n".join([u.mention for u in self.pool]) or "Empty", inline=False)
+        e = discord.Embed(title="🐍 Snake Draft")
+        e.add_field(name="Team 1", value="\n".join([u.mention for u in self.team1]))
+        e.add_field(name="Team 2", value="\n".join([u.mention for u in self.team2]))
+        e.add_field(name="Pool", value="\n".join([u.mention for u in self.pool]) or "Empty", inline=False)
         self.clear_items()
-        if not self.pool: self.stop(); self.embed = discord.Embed(title="🏁 Draft Finished", description=e.description, color=discord.Color.gold()); return
+        if not self.pool:
+            self.stop()
+            self.embed = discord.Embed(title="🏁 Draft Finished", description=e.description, color=discord.Color.gold())
+            return
         for u in self.pool[:5]:
             btn = discord.ui.Button(label=f"Pick {u.display_name}", style=discord.ButtonStyle.green)
-            btn.callback = lambda i, u=u: self.pick(i, u); self.add_item(btn)
+            # Need a closure or method for the callback to capture 'u'
+            btn.callback = lambda i, u=u: self.pick(i, u)
+            self.add_item(btn)
         self.embed = e
+
     async def pick(self, i, u):
-        if i.user.id != self.turn.id: return await i.response.send_message("Not your turn", ephemeral=True)
+        if i.user.id != self.turn.id:
+            return await i.response.send_message("Not your turn", ephemeral=True)
         await i.response.defer()
-        if self.turn == self.c1: self.team1.append(u); self.turn = self.c2
-        else: self.team2.append(u); self.turn = self.c1
-        self.pool.remove(u); await i.edit_original_response(embed=self.embed, view=self)
+        if self.turn == self.c1:
+            self.team1.append(u)
+            self.turn = self.c2
+        else:
+            self.team2.append(u)
+            self.turn = self.c1
+        self.pool.remove(u)
+        await i.edit_original_response(embed=self.embed, view=self)
 
 # ─────────────────────────────────────────────────────────────
 # SCOUTING HELPERS
@@ -345,7 +363,6 @@ async def record_win(i: discord.Interaction, winner: str, loser: str):
 @app_commands.describe(players="Mention players")
 async def captains(i: discord.Interaction, players: str):
     await i.response.defer()
-    # Mock balance
     members = [{"name": p.display_name, "prp": random.randint(1000, 3000)} for p in i.guild.members[:8]]
     teams = calculate_team_balance(members)
     t1 = "\n".join([m['name'] for m in teams['team_a']])
@@ -377,7 +394,7 @@ async def scout(i: discord.Interaction, clan: str):
 
 @bot.tree.command(name="mvp")
 async def mvp(i: discord.Interaction):
-    await i.response.send_message("🌟 (Simulated AI Analysis)\nBased on recent matches, this player has high clutch factor (1vX wins: 15%).")
+    await i.response.send_message("🌟 (Simulated AI Analysis)\nBased on recent matches, this player has high clutch factor.")
 
 @bot.tree.command(name="coach")
 async def coach(i: discord.Interaction):
@@ -399,14 +416,12 @@ async def tierlist(i: discord.Interaction):
 @bot.tree.command(name="api_profile")
 @app_commands.describe(name="Name")
 async def api_profile(i: discord.Interaction, name: str):
-    # Simulates a Public API endpoint for your website
     m = await get_roster_member(name)
     json_data = {"name": name, "points": m.get('points',0), "level": m.get('level',1)} if m else {}
     await i.response.send_message(f"```json\n{json_data}\n```")
 
 @bot.tree.command(name="dashboard")
 async def dashboard(i: discord.Interaction):
-    # Simulated Visual Dashboard
     await i.response.send_message("```[Clan Dashboard]\n[Members: 50]\n[Active: 12]\n[War: #4]\n[Coins: 15M]```")
 
 # 6. ORIGINALS (Members, Register, etc.)
@@ -432,7 +447,6 @@ async def register(i: discord.Interaction, name: str, player_id: str):
 @bot.tree.command(name="prp")
 async def prp(i: discord.Interaction):
     await i.response.defer()
-    # Logic from previous code...
     await i.followup.send("Fetching PRP... (Simulated)")
 
 @bot.tree.command(name="profile")
