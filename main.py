@@ -2,14 +2,14 @@ import os
 import sys
 import discord
 from discord import app_commands
-from discord.ui import ButtonStyle  # <--- ADDED THIS
 from discord.ext import commands, tasks
 import aiohttp
 import random
 import logging
+from discord.enums import ButtonStyle  # <--- FIXED IMPORT
 
 # ─────────────────────────────────────────────────────────────
-# 🔧 IMPORTS
+# IMPORTS
 # ─────────────────────────────────────────────────────────────
 from datetime import datetime, timedelta, time
 
@@ -280,7 +280,6 @@ class SnakeDraftView(discord.ui.View):
             return
         for u in self.pool[:5]:
             btn = discord.ui.Button(label=f"Pick {u.display_name}", style=discord.ButtonStyle.green)
-            # Need a closure or method for the callback to capture 'u'
             btn.callback = lambda i, u=u: self.pick(i, u)
             self.add_item(btn)
         self.embed = e
@@ -290,11 +289,9 @@ class SnakeDraftView(discord.ui.View):
             return await i.response.send_message("Not your turn", ephemeral=True)
         await i.response.defer()
         if self.turn == self.c1:
-            self.team1.append(u)
-            self.turn = self.c2
+            self.team1.append(u); self.turn = self.c2
         else:
-            self.team2.append(u)
-            self.turn = self.c1
+            self.team2.append(u); self.turn = self.c1
         self.pool.remove(u)
         await i.edit_original_response(embed=self.embed, view=self)
 
@@ -394,7 +391,7 @@ async def scout(i: discord.Interaction, clan: str):
 
 @bot.tree.command(name="mvp")
 async def mvp(i: discord.Interaction):
-    await i.response.send_message("🌟 (Simulated AI Analysis)\nBased on recent matches, this player has high clutch factor.")
+    await i.response.send_message("🌟 (Simulated AI Analysis)\nBased on recent matches, this player has high clutch factor (1vX wins: 15%).")
 
 @bot.tree.command(name="coach")
 async def coach(i: discord.Interaction):
@@ -456,7 +453,8 @@ async def profile(i: discord.Interaction, player_id: str):
     d = await kirka_get_profile(player_id)
     if d:
         e = discord.Embed(title=d.get('name'), description=f"#{d.get('shortId')}")
-        e.add_field(name="PRP", value=d.get('klo2V2',0)); e.add_field(name="K/D", value=d.get('stats',{}).get('kills',0)/max(d.get('stats',{}).get('deaths',1),1))
+        e.add_field(name="PRP", value=d.get('klo2V2',0))
+        e.add_field(name="K/D", value=d.get('stats',{}).get('kills',0)/max(d.get('stats',{}).get('deaths',1),1))
         await i.followup.send(embed=e)
     else: await i.followup.send("Not found.")
 
