@@ -8,12 +8,28 @@ import time
 from functools import wraps
 
 # ─────────────────────────────────────────────────────────────
-# CONFIG
+# CONFIG & CONSTANTS
 # ─────────────────────────────────────────────────────────────
 KIRKA_API_KEY  = os.environ.get('KIRKA_API_KEY', '573d64dc39e83332e2237c1fd5fc2a991958c4d0225bcfbd307ee2a3a456d473')
 KIRKA_BASE_URL = "https://api.kirka.io"
 API_CACHE      = {}
 CACHE_DURATION = 60  # seconds
+
+# Shop Configuration
+SHOP_ITEMS = {
+    "booster": {"id": "booster", "name": "XP Booster", "price": 500, "desc": "A temporary role for attention."},
+    "custom_color": {"id": "custom_color", "name": "Custom Color", "price": 1000, "desc": "Get a custom colored role."},
+    "nitro": {"id": "nitro", "name": "Fake Nitro", "price": 5000, "desc": "A cool role named 'Nitro'"},
+    "premium": {"id": "premium", "name": "Premium Status", "price": 10000, "desc": "Top tier role in the server."},
+}
+
+# Activity State
+ACTIVE_ACTIVITY = {
+    "active": False,
+    "points": 0,
+    "participants": [], # List of discord.Member objects
+    "starter": None
+}
 
 http_session = None
 
@@ -114,6 +130,7 @@ class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True
+        intents.message_content = True # Good practice to have
         super().__init__(command_prefix="!", intents=intents, help_command=None)
 
     async def setup_hook(self):
@@ -170,8 +187,7 @@ async def kirka_get_clan(clan_name: str):
         ) as resp:
             if resp.status == 200:
                 return await resp.json()
-            body = await resp.text()
-            print(f"[Kirka] getClan {clan_name} → HTTP {resp.status} | {body[:200]}")
+            print(f"[Kirka] getClan {clan_name} → HTTP {resp.status}")
             return None
     except Exception as e:
         print(f"[Kirka] getClan error: {e}")
@@ -186,8 +202,7 @@ async def kirka_get_ranked2v2():
         ) as resp:
             if resp.status == 200:
                 return await resp.json()
-            body = await resp.text()
-            print(f"[Kirka] ranked2V2 → HTTP {resp.status} | {body[:200]}")
+            print(f"[Kirka] ranked2V2 → HTTP {resp.status}")
             return None
     except Exception as e:
         print(f"[Kirka] ranked2V2 error: {e}")
@@ -238,6 +253,28 @@ async def update_player_points(player_name: str, new_points: float):
     except Exception as e:
         print(f"[Supabase] update_player_points error: {e}")
         return False
+
+# ─────────────────────────────────────────────────────────────
+# AUTOCOMPLETE HELPER
+# ─────────────────────────────────────────────────────────────
+async def roster_autocomplete(interaction: discord.Interaction, current: str):
+    # Small cache for autocomplete to avoid hitting DB every keystroke
+    try:
+        async with http_session.get(supabase_endpoint("roster?select=name,player_id&limit=25"), headers=supabase_headers()) as resp:
+            roster = await resp.json()
+    except:
+        roster = []
+        
+    suggestions = []
+    current_lower = current.lower()
+    
+    for player in roster:
+        name = player.get("name", "")
+        pid  = player.get("player_id", "")
+        if current_lower in name.lower() or current_lower in pid.lower():
+            suggestions.append(app_commands.Choice(name=name, value=name))
+    
+    return suggestions[:25]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -354,14 +391,7 @@ class ApplicationApprovalView(discord.ui.View):
 # CHALLENGE SYSTEM
 # ─────────────────────────────────────────────────────────────
 
-# Track active challenges: challenger_id -> challenge data
-active_challenges: dict = {}
-
 class ChallengeResultView(discord.ui.View):
-    """
-    Shown after a challenge is accepted.
-    Only admins/leaders can declare the winner.
-    """
     def __init__(self, challenger_data: dict, opponent_data: dict, bet: float,
                  challenger_member: discord.Member, opponent_member: discord.Member):
         super().__init__(timeout=300)
@@ -373,15 +403,8 @@ class ChallengeResultView(discord.ui.View):
         self.resolved          = False
 
     def calculate_payout(self, winner_data: dict, loser_data: dict) -> float:
-        """
-        Returns the actual points the winner earns.
-        If winner's tier >= loser's tier (winner is same or higher), no multiplier — flat bet.
-        If winner's tier < loser's tier (upset), apply winner's tier multiplier.
-        """
         winner_tier_rank = tier_rank(winner_data.get("tier", "F"))
         loser_tier_rank  = tier_rank(loser_data.get("tier", "F"))
-
-        # Lower rank index = higher tier. Upset = winner_tier_rank > loser_tier_rank
         if winner_tier_rank > loser_tier_rank:
             multiplier = TIER_MULTIPLIER.get(winner_data.get("tier", "F").strip(), 1.0)
             return round(self.bet * multiplier, 2)
@@ -410,10 +433,7 @@ class ChallengeResultView(discord.ui.View):
         await update_player_points(winner_data["name"], winner_new_pts)
         await update_player_points(loser_data["name"], loser_new_pts)
 
-        embed = discord.Embed(
-            title="⚔️ Challenge Result",
-            color=discord.Color.gold()
-        )
+        embed = discord.Embed(title="⚔️ Challenge Result", color=discord.Color.gold())
         embed.add_field(
             name="🏆 Winner",
             value=(
@@ -471,7 +491,6 @@ class ChallengeResultView(discord.ui.View):
 
 
 class ChallengeAcceptView(discord.ui.View):
-    """Shown to the opponent to accept or decline."""
     def __init__(self, challenger_data: dict, opponent_data: dict, bet: float,
                  challenger_member: discord.Member, opponent_member: discord.Member):
         super().__init__(timeout=120)
@@ -526,23 +545,21 @@ class ChallengeAcceptView(discord.ui.View):
 
 
 # ─────────────────────────────────────────────────────────────
-# COMMAND: /challenge
+# COMMANDS
 # ─────────────────────────────────────────────────────────────
+
 @bot.tree.command(name="challenge", description="Challenge another clan member to a bet")
 @app_commands.describe(opponent="The member you want to challenge", bet="How many points to bet")
 @cooldown(10)
 async def challenge(interaction: discord.Interaction, opponent: discord.Member, bet: float):
     await interaction.response.defer()
-
     if opponent.id == interaction.user.id:
         await interaction.followup.send("❌ You can't challenge yourself.", ephemeral=True)
         return
-
     if bet <= 0:
         await interaction.followup.send("❌ Bet must be greater than 0.", ephemeral=True)
         return
 
-    # Fetch both players from roster by discord handle
     challenger_data = await get_roster_player_by_discord(interaction.user.name)
     opponent_data   = await get_roster_player_by_discord(opponent.name)
 
@@ -553,7 +570,6 @@ async def challenge(interaction: discord.Interaction, opponent: discord.Member, 
         await interaction.followup.send(f"❌ {opponent.display_name} is not registered in the roster.", ephemeral=True)
         return
 
-    # Check tiers exist
     challenger_tier = challenger_data.get("tier")
     opponent_tier   = opponent_data.get("tier")
 
@@ -564,21 +580,14 @@ async def challenge(interaction: discord.Interaction, opponent: discord.Member, 
         await interaction.followup.send(f"❌ {opponent.display_name} doesn't have a tier assigned yet.", ephemeral=True)
         return
 
-    # Check challenger has enough points
     challenger_pts = float(challenger_data.get("points") or 0)
     if challenger_pts < bet:
-        await interaction.followup.send(
-            f"❌ You don't have enough points. Your balance: `{challenger_pts:,.2f}`", ephemeral=True
-        )
+        await interaction.followup.send(f"❌ You don't have enough points. Your balance: `{challenger_pts:,.2f}`", ephemeral=True)
         return
 
-    # Check opponent has enough points
     opponent_pts = float(opponent_data.get("points") or 0)
     if opponent_pts < bet:
-        await interaction.followup.send(
-            f"❌ {opponent.display_name} doesn't have enough points to cover this bet (`{opponent_pts:,.2f}`).",
-            ephemeral=True
-        )
+        await interaction.followup.send(f"❌ {opponent.display_name} doesn't have enough points (`{opponent_pts:,.2f}`).", ephemeral=True)
         return
 
     view = ChallengeAcceptView(
@@ -594,10 +603,8 @@ async def challenge(interaction: discord.Interaction, opponent: discord.Member, 
         description=(
             f"{interaction.user.mention} has challenged {opponent.mention}!\n\n"
             f"**Bet:** `{bet:,.2f}` points\n"
-            f"**{interaction.user.display_name}'s Tier:** `{challenger_tier}` "
-            f"*(Balance: `{challenger_pts:,.2f}`)*\n"
-            f"**{opponent.display_name}'s Tier:** `{opponent_tier}` "
-            f"*(Balance: `{opponent_pts:,.2f}`)*\n\n"
+            f"**{interaction.user.display_name}'s Tier:** `{challenger_tier}` *(Balance: `{challenger_pts:,.2f}`)*\n"
+            f"**{opponent.display_name}'s Tier:** `{opponent_tier}` *(Balance: `{opponent_pts:,.2f}`)*\n\n"
             f"{opponent.mention}, do you accept?"
         ),
         color=discord.Color.orange()
@@ -606,42 +613,32 @@ async def challenge(interaction: discord.Interaction, opponent: discord.Member, 
     await interaction.followup.send(embed=embed, view=view)
 
 
-# ─────────────────────────────────────────────────────────────
-# COMMAND: /settier — Admin sets a player's tier
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="settier", description="Set a player's tier (leaders only)")
 @app_commands.describe(name="Player's roster name", tier="Tier to assign (S, A+, A, B, C, F)")
 @app_commands.default_permissions(administrator=True)
+@app_commands.autocomplete(name=roster_autocomplete)
 async def settier(interaction: discord.Interaction, name: str, tier: str):
     await interaction.response.defer(ephemeral=True)
-
     tier = tier.strip()
     if tier not in TIER_ORDER:
-        await interaction.followup.send(
-            f"❌ Invalid tier `{tier}`. Valid tiers: {', '.join(TIER_ORDER)}", ephemeral=True
-        )
+        await interaction.followup.send(f"❌ Invalid tier `{tier}`. Valid tiers: {', '.join(TIER_ORDER)}", ephemeral=True)
         return
 
     url = supabase_endpoint(f"roster?name=ilike.{name}")
     try:
         async with http_session.patch(url, headers=supabase_headers(), json={"tier": tier}) as resp:
             if resp.status in [200, 204]:
-                await interaction.followup.send(
-                    f"✅ Set **{name}**'s tier to `{tier}`.", ephemeral=True
-                )
+                await interaction.followup.send(f"✅ Set **{name}**'s tier to `{tier}`.", ephemeral=True)
             else:
-                body = await resp.text()
-                await interaction.followup.send(f"❌ Failed to update tier. (HTTP {resp.status}: {body[:100]})", ephemeral=True)
+                await interaction.followup.send(f"❌ Failed to update tier. (HTTP {resp.status})", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 
-# ─────────────────────────────────────────────────────────────
-# COMMAND: /addpoints — Admin manually adds points
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="addpoints", description="Add points to a player (leaders only)")
 @app_commands.describe(name="Player's roster name", amount="Points to add")
 @app_commands.default_permissions(administrator=True)
+@app_commands.autocomplete(name=roster_autocomplete)
 async def addpoints(interaction: discord.Interaction, name: str, amount: float):
     await interaction.response.defer(ephemeral=True)
     player = await get_roster_player_by_name(name)
@@ -656,11 +653,9 @@ async def addpoints(interaction: discord.Interaction, name: str, amount: float):
         await interaction.followup.send("❌ Failed to update points.", ephemeral=True)
 
 
-# ─────────────────────────────────────────────────────────────
-# COMMAND: /points — Check your own (or another player's) points
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="points", description="Check a player's points and tier")
 @app_commands.describe(name="Player name (leave blank for yourself)")
+@app_commands.autocomplete(name=roster_autocomplete)
 async def points(interaction: discord.Interaction, name: str = None):
     await interaction.response.defer()
     if name:
@@ -674,22 +669,182 @@ async def points(interaction: discord.Interaction, name: str = None):
 
     pts  = float(player.get("points") or 0)
     tier = player.get("tier") or "Unranked"
-    embed = make_embed(
-        f"💰 {to_fancy_font(player['name'])}",
-        f"**Tier:** `{tier}`\n**Points:** `{pts:,.2f}`"
-    )
+    embed = make_embed(f"💰 {to_fancy_font(player['name'])}", f"**Tier:** `{tier}`\n**Points:** `{pts:,.2f}`")
     await interaction.followup.send(embed=embed)
 
 
 # ─────────────────────────────────────────────────────────────
-# COMMAND 1: /members
+# ACTIVITY SYSTEM
 # ─────────────────────────────────────────────────────────────
+@bot.tree.command(name="activity", description="Host or join clan activities")
+@app_commands.default_permissions(administrator=True) # Only admins can see subcommands by default? No, specific checks inside
+async def activity(interaction: discord.Interaction):
+    """Base command for activities."""
+    pass
+
+@activity.command(name="start", description="Start an activity session")
+@app_commands.describe(points="Points awarded to each participant")
+async def activity_start(interaction: discord.Interaction, points: float):
+    if not (discord.utils.get(interaction.user.roles, name="leader") or interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("❌ Only leaders can start activities.", ephemeral=True)
+        return
+        
+    global ACTIVE_ACTIVITY
+    if ACTIVE_ACTIVITY["active"]:
+        await interaction.response.send_message("❌ An activity is already active! End it first.", ephemeral=True)
+        return
+
+    ACTIVE_ACTIVITY["active"] = True
+    ACTIVE_ACTIVITY["points"] = points
+    ACTIVE_ACTIVITY["participants"] = []
+    ACTIVE_ACTIVITY["starter"] = interaction.user.mention
+
+    embed = make_embed(
+        "🎉 Activity Started!",
+        f"Started by: {interaction.user.mention}\n"
+        f"Reward: `{points:,.2f}` points\n\n"
+        f"**Use `/activity join` to participate!**",
+        color=discord.Color.magenta()
+    )
+    await interaction.response.send_message(embed=embed)
+
+@activity.command(name="join", description="Join the current activity")
+async def activity_join(interaction: discord.Interaction):
+    await interaction.response.defer()
+    global ACTIVE_ACTIVITY
+    
+    if not ACTIVE_ACTIVITY["active"]:
+        await interaction.followup.send("❌ No active activity right now.", ephemeral=True)
+        return
+
+    # Check if user is already in list
+    if any(p.id == interaction.user.id for p in ACTIVE_ACTIVITY["participants"]):
+        await interaction.followup.send("❌ You already joined this activity.", ephemeral=True)
+        return
+
+    ACTIVE_ACTIVITY["participants"].append(interaction.user)
+    await interaction.followup.send(f"✅ {interaction.user.mention} joined the activity!", ephemeral=False)
+
+@activity.command(name="end", description="End the activity and distribute points")
+async def activity_end(interaction: discord.Interaction):
+    if not (discord.utils.get(interaction.user.roles, name="leader") or interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("❌ Only leaders can end activities.", ephemeral=True)
+        return
+
+    global ACTIVE_ACTIVITY
+    if not ACTIVE_ACTIVITY["active"]:
+        await interaction.response.send_message("❌ No active activity to end.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    
+    participants = ACTIVE_ACTIVITY["participants"]
+    points_awarded = ACTIVE_ACTIVITY["points"]
+    
+    if not participants:
+        ACTIVE_ACTIVITY["active"] = False
+        await interaction.followup.send("No one joined the activity. Session ended.")
+        return
+
+    success_count = 0
+    failed_users = []
+
+    # Process distribution
+    for member in participants:
+        player_data = await get_roster_player_by_discord(member.name)
+        if player_data:
+            current_pts = float(player_data.get("points") or 0)
+            new_pts = current_pts + points_awarded
+            if await update_player_points(player_data["name"], new_pts):
+                success_count += 1
+            else:
+                failed_users.append(member.display_name)
+        else:
+            failed_users.append(member.display_name)
+
+    ACTIVE_ACTIVITY["active"] = False # Reset state
+
+    embed = discord.Embed(
+        title="🏁 Activity Ended",
+        description=f"Distributed `{points_awarded}` points to **{success_count}** members.",
+        color=discord.Color.green()
+    )
+    
+    # List some winners
+    winners_list = "\n".join([p.mention for p in participants[:10]])
+    if len(participants) > 10:
+        winners_list += f"\n...and {len(participants)-10} others."
+        
+    embed.add_field(name="Participants", value=winners_list if winners_list else "None", inline=False)
+    
+    if failed_users:
+        embed.add_field(name="Failed to update", value=", ".join(failed_users), inline=False)
+        embed.color = discord.Color.orange()
+
+    await interaction.followup.send(embed=embed)
+
+
+# ─────────────────────────────────────────────────────────────
+# SHOP SYSTEM
+# ─────────────────────────────────────────────────────────────
+@bot.tree.command(name="shop", description="View the clan shop")
+async def shop(interaction: discord.Interaction):
+    await interaction.response.defer()
+    
+    desc = ""
+    for key, item in SHOP_ITEMS.items():
+        desc += f"**{item['name']}** — `{item['price']:,} pts`\n`ID: {item['id']}`\n_{item['desc']}_\n\n"
+    
+    embed = make_embed("🛒 Clan Shop", desc, color=discord.Color.purple())
+    embed.set_footer(text="Use /buy [item_id] to purchase an item.")
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="buy", description="Buy an item from the shop")
+@app_commands.describe(item_id="The ID of the item to buy")
+async def buy(interaction: discord.Interaction, item_id: str):
+    await interaction.response.defer()
+    
+    if item_id not in SHOP_ITEMS:
+        await interaction.followup.send(f"❌ Item ID `{item_id}` not found. Use `/shop` to see items.", ephemeral=True)
+        return
+    
+    item = SHOP_ITEMS[item_id]
+    
+    # Get player data
+    player_data = await get_roster_player_by_discord(interaction.user.name)
+    if not player_data:
+        await interaction.followup.send("❌ You are not registered in the roster.", ephemeral=True)
+        return
+    
+    current_pts = float(player_data.get("points") or 0)
+    
+    if current_pts < item['price']:
+        await interaction.followup.send(f"❌ You need `{item['price'] - current_pts:,.2f}` more points to buy this.", ephemeral=True)
+        return
+    
+    # Deduct points
+    new_pts = current_pts - item['price']
+    if await update_player_points(player_data['name'], new_pts):
+        embed = discord.Embed(
+            title="🛍️ Purchase Successful!",
+            description=f"You bought **{item['name']}** for `{item['price']:,}` points.\nNew Balance: `{new_pts:,.2f}`",
+            color=discord.Color.gold()
+        )
+        # Optional: Add logic to give roles here based on item_id
+        # e.g., if item_id == "booster": add_role(...)
+        
+        await interaction.followup.send(embed=embed)
+    else:
+        await interaction.followup.send("❌ Transaction failed due to database error.", ephemeral=True)
+
+
+# ─────────────────────────────────────────────────────────────
+# OTHER COMMANDS (Existing functionality maintained)
+# ─────────────────────────────────────────────────────────────
+
 @bot.tree.command(name="members", description="Previews all registered data from the Supabase clan roster")
 async def members(interaction: discord.Interaction):
     await interaction.response.defer()
-    if not os.environ.get('SUPABASE_URL') or not os.environ.get('SUPABASE_KEY'):
-        await interaction.followup.send("Error: Supabase credentials are missing.")
-        return
     try:
         async with http_session.get(
             supabase_endpoint("roster?select=*&order=name.desc"),
@@ -735,9 +890,6 @@ async def members(interaction: discord.Interaction):
         await interaction.followup.send("Failed to fetch roster data.")
 
 
-# ─────────────────────────────────────────────────────────────
-# COMMAND 2: /register
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="register", description="Apply to join the clan")
 @app_commands.describe(name="Your name", player_id="Your in-game ID")
 async def register(interaction: discord.Interaction, name: str, player_id: str):
@@ -767,11 +919,9 @@ async def register(interaction: discord.Interaction, name: str, player_id: str):
     await interaction.followup.send("Application sent to administrators.", ephemeral=True)
 
 
-# ─────────────────────────────────────────────────────────────
-# COMMAND 3: /kick
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="kick", description="Remove a player from the roster")
 @app_commands.default_permissions(administrator=True)
+@app_commands.autocomplete(name=roster_autocomplete)
 async def kick(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
     try:
@@ -796,15 +946,9 @@ async def kick(interaction: discord.Interaction, name: str):
         await interaction.followup.send(f"Critical error: {e}")
 
 
-# ─────────────────────────────────────────────────────────────
-# COMMAND 4: /prp
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="prp", description="Check Ranked 2v2 Points and K/D for all roster players")
 async def prp(interaction: discord.Interaction):
     await interaction.response.defer()
-    if not os.environ.get('SUPABASE_URL') or not os.environ.get('SUPABASE_KEY'):
-        await interaction.followup.send("Error: Supabase credentials are missing.")
-        return
     try:
         async with http_session.get(
             supabase_endpoint("roster?select=*"),
@@ -859,14 +1003,15 @@ async def prp(interaction: discord.Interaction):
         await interaction.followup.send(f"Failed to fetch stats: {e}")
 
 
-# ─────────────────────────────────────────────────────────────
-# COMMAND: /topkd
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="topkd", description="Top K/D players in the roster")
 async def topkd(interaction: discord.Interaction):
     await interaction.response.defer()
-    async with http_session.get(supabase_endpoint("roster?select=*"), headers=supabase_headers()) as response:
-        roster = await response.json()
+    try:
+        async with http_session.get(supabase_endpoint("roster?select=*"), headers=supabase_headers()) as response:
+            roster = await response.json()
+    except Exception:
+        await interaction.followup.send("Error fetching roster.")
+        return
 
     tasks    = [kirka_get_profile(p["player_id"]) for p in roster]
     profiles = await asyncio.gather(*tasks)
@@ -888,15 +1033,20 @@ async def topkd(interaction: discord.Interaction):
     await interaction.followup.send(embed=make_embed("🎯 Highest K/D Players", text))
 
 
-# ─────────────────────────────────────────────────────────────
-# COMMAND 5: /profile
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="profile", description="Look up a Kirka player's profile by their short ID")
 @app_commands.describe(player_id="The player's short ID (e.g. XMNVRX)")
 @cooldown(5)
+@app_commands.autocomplete(player_id=roster_autocomplete) # Reusing roster autocomplete for ease of use
 async def profile(interaction: discord.Interaction, player_id: str):
     await interaction.response.defer()
+    # Autocomplete returns Name, but input might be ID. Try Name lookup first for roster convenience
     data = await kirka_get_profile(player_id)
+    # If not found, try searching by roster name if the input matches a roster player's ID
+    if not data:
+        player = await get_roster_player_by_name(player_id)
+        if player:
+            data = await kirka_get_profile(player.get('player_id'))
+            
     if not data:
         await interaction.followup.send(f"❌ Could not find a player with ID `{player_id}`.")
         return
@@ -925,50 +1075,43 @@ async def profile(interaction: discord.Interaction, player_id: str):
     await interaction.followup.send(embed=embed)
 
 
-@profile.autocomplete("player_id")
-async def profile_autocomplete(interaction: discord.Interaction, current: str):
-    async with http_session.get(supabase_endpoint("roster?select=*"), headers=supabase_headers()) as response:
-        roster = await response.json()
-    suggestions = []
-    for player in roster[:25]:
-        name = player.get("name", "")
-        pid  = player.get("player_id", "")
-        if current.lower() in name.lower():
-            suggestions.append(app_commands.Choice(name=f"{name} ({pid})", value=pid))
-    return suggestions[:25]
-
-
-# ─────────────────────────────────────────────────────────────
-# COMMAND: /compare
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="compare", description="Compare two Kirka players")
+@app_commands.autocomplete(player1=roster_autocomplete, player2=roster_autocomplete)
 async def compare(interaction: discord.Interaction, player1: str, player2: str):
     await interaction.response.defer()
-    p1, p2 = await asyncio.gather(kirka_get_profile(player1), kirka_get_profile(player2))
-    if not p1 or not p2:
+    
+    # Try fetching via Kirka ID directly or roster lookup
+    p1_data = await kirka_get_profile(player1)
+    if not p1_data:
+        p1_roster = await get_roster_player_by_name(player1)
+        if p1_roster: p1_data = await kirka_get_profile(p1_roster['player_id'])
+            
+    p2_data = await kirka_get_profile(player2)
+    if not p2_data:
+        p2_roster = await get_roster_player_by_name(player2)
+        if p2_roster: p2_data = await kirka_get_profile(p2_roster['player_id'])
+
+    if not p1_data or not p2_data:
         await interaction.followup.send("❌ Failed to fetch one or both players.")
         return
 
     def kd(stats):
         return round(stats.get("kills", 0) / max(stats.get("deaths", 1), 1), 2)
 
-    embed = make_embed(f"⚔️ {p1['name']} vs {p2['name']}")
+    embed = make_embed(f"⚔️ {p1_data['name']} vs {p2_data['name']}")
     embed.add_field(
-        name=p1["name"],
-        value=f"Level: `{p1.get('level', 0)}`\nKD: `{kd(p1['stats'])}`\nPRP: `{p1.get('klo2V2', 0):,.2f}`",
+        name=p1_data["name"],
+        value=f"Level: `{p1_data.get('level', 0)}`\nKD: `{kd(p1_data['stats'])}`\nPRP: `{p1_data.get('klo2V2', 0):,.2f}`",
         inline=True
     )
     embed.add_field(
-        name=p2["name"],
-        value=f"Level: `{p2.get('level', 0)}`\nKD: `{kd(p2['stats'])}`\nPRP: `{p2.get('klo2V2', 0):,.2f}`",
+        name=p2_data["name"],
+        value=f"Level: `{p2_data.get('level', 0)}`\nKD: `{kd(p2_data['stats'])}`\nPRP: `{p2_data.get('klo2V2', 0):,.2f}`",
         inline=True
     )
     await interaction.followup.send(embed=embed)
 
 
-# ─────────────────────────────────────────────────────────────
-# COMMAND 6: /claninfo
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="claninfo", description="Show Kiss clan info and member list from Kirka")
 async def claninfo(interaction: discord.Interaction):
     await interaction.response.defer()
@@ -1009,9 +1152,6 @@ async def claninfo(interaction: discord.Interaction):
     await interaction.followup.send(embed=view.create_embed(), view=view)
 
 
-# ─────────────────────────────────────────────────────────────
-# COMMAND 7: /ranked2v2
-# ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="ranked2v2", description="Show the global Kirka ranked 2v2 leaderboard")
 async def ranked2v2(interaction: discord.Interaction):
     await interaction.response.defer()
@@ -1044,9 +1184,12 @@ async def ranked2v2(interaction: discord.Interaction):
 # ─────────────────────────────────────────────────────────────
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.CommandNotFound):
+        return # Ignore unknown commands
+    
     print(f"[ERROR] {error}")
     try:
-        msg = "❌ Something went wrong."
+        msg = "❌ Something went wrong executing that command."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
         else:
