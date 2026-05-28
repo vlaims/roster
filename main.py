@@ -2,16 +2,14 @@ import os
 import sys
 import discord
 from discord import app_commands
+from discord import app_commands
 from discord.ext import commands, tasks
 import aiohttp
 import random
 import logging
-from discord.enums import ButtonStyle  # <--- FIXED IMPORT
-
-# ─────────────────────────────────────────────────────────────
-# IMPORTS
-# ─────────────────────────────────────────────────────────────
 from datetime import datetime, timedelta, time
+from discord.enums import ButtonStyle
+import json
 
 # ─────────────────────────────────────────────────────────────
 # CONFIG & CONSTANTS
@@ -22,17 +20,26 @@ SUPABASE_URL   = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY   = os.environ.get('SUPABASE_KEY')
 LOGS_CHANNEL_ID = int(os.environ.get('LOGS_CHANNEL_ID', 0)) 
 
-TIER_ORDER      = ["S", "A+", "A", "B", "C", "F"]
+TIER_ORDER      = ["S", "A+", "A", "B", "C", ""]
 TIER_MULTIPLIER = {"S": 3.0, "A+": 2.5, "A": 2.0, "B": 1.5, "C": 1.0, "F": 0.5}
 XP_RATE         = 10 
 LEVEL_UP_XP     = 1000
-DAILY_REWARD    = 50
+DAILY_REWARD    = 500  # Increased for clan XP
 WEEKLY_RESET_DAY = 0 
 
-ACTIVE_EVENTS = {}
-ACTIVE_CHALLENGES = {}
-MATCHMAKING = []
+# ─────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────
+def kirka_headers():
+    return {"ApiKey": KIRKA_API_KEY, "Accept": "application/json", "Content-Type": "application/json"}
 
+def supabase_headers():
+    return {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
+
+def supabase_endpoint(path: str) -> str:
+    return f"{SUPABASE_URL.rstrip('/')}/rest/v1/{path}"
+
+# ─────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────
 # AI & CALCULATION HELPERS
 # ─────────────────────────────────────────────────────────────
@@ -46,9 +53,6 @@ def calculate_team_balance(members_list: list):
             team_b.append(m); score_b += m.get('prp', 0)
     return {"team_a": team_a, "team_b": team_b, "diff": abs(score_a - score_b)}
 
-def ai_predict_stat(current: float, metric: str):
-    return current * 1.05 if metric == "growth" else current + random.randint(50, 200)
-
 # ─────────────────────────────────────────────────────────────
 # DATABASE HELPERS
 # ─────────────────────────────────────────────────────────────
@@ -60,8 +64,7 @@ async def get_roster_member(name: str):
                 if resp.status == 200:
                     data = await resp.json()
                     return data[0] if data else None
-    except Exception: pass
-    return None
+    except Exception: return None
 
 async def update_roster_member(name: str, data: dict):
     url = supabase_endpoint(f"roster?name=eq.{name}")
@@ -69,26 +72,32 @@ async def update_roster_member(name: str, data: dict):
         async with aiohttp.ClientSession() as session:
             async with session.patch(url, headers=supabase_headers(), json=data) as resp:
                 return resp.status in [200, 204]
-    except Exception: pass
-    return False
+    except Exception: return False
 
 async def log_action(action, user, details):
-    url = supabase_endpoint("logs")
-    payload = {"action": action, "user_name": user, "details": details}
+    # Log to DB (if table exists)
     try:
-        async with aiohttp.ClientSession() as session:
-            await session.post(url, headers=supabase_headers(), json=payload)
+        async with aiohttp.ClientSession() as s:
+            await s.post(supabase_endpoint("logs"), headers=supabase_headers(), json={"action": action, "user_name": user, "details": details})
     except: pass
+    # Log to Discord
     if LOGS_CHANNEL_ID:
         try:
             channel = bot.get_channel(LOGS_CHANNEL_ID)
             if channel: await channel.send(f"📝 **{action}** | `{user}`: {details}")
         except: pass
 
-async def add_xp(name, amount):
+async def add_xp(name, amount, reason="Activity"):
     m = await get_roster_member(name)
     if m:
-        await update_roster_member(name, {"xp": m.get('xp',0)+amount, "level": int((m.get('xp',0)+amount)/1000)+1})
+        new_xp = m.get('xp', 0) + amount
+        new_lvl = int(new_xp / LEVEL_UP_XP) + 1
+        await update_roster_member(name, {"xp": new_xp, "level": new_lvl})
+        # Clan XP Logic
+        clan_xp_gain = int(amount / 2)
+        # In a real app, we'd have a separate `clans` table.
+        # For now, we just log it or increment a global clan score counter.
+        log_action("XP", name, f"+{amount} XP. Level Up? {new_lvl > m.get('level', 1)}")
 
 async def add_points(name, amount, reason):
     m = await get_roster_member(name)
@@ -96,6 +105,16 @@ async def add_points(name, amount, reason):
         new_bal = m.get('points',0)+amount
         await update_roster_member(name, {"points": new_bal})
         await log_action("ECONOMY", name, f"{amount:+} pts ({reason}). New: {new_bal}")
+
+async def add_excuse(user):
+    m = await get_roster_member(user)
+    if m:
+        await update_roster_member(user, {"excuses": m.get('excuses', 0) + 1})
+
+async def add_glaze(user):
+    m = await get_roster_member(user)
+    if m:
+        await update_roster_member(user, {"glaze": m.get('glaze', 0) + 1})
 
 # ─────────────────────────────────────────────────────────────
 # KIRKA API HELPERS
@@ -119,13 +138,14 @@ async def kirka_get_clan(clan_name: str):
     return None
 
 # ─────────────────────────────────────────────────────────────
-# BOT CLASS
+# BOT CLASS (With Intents for VC Tracking)
 # ─────────────────────────────────────────────────────────────
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = True
+        intents.presences = True # <--- NEEDED FOR VC TRACKING
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
@@ -135,8 +155,13 @@ class MyBot(commands.Bot):
         self.daily_leaderboard_task.start()
         self.auto_sync_stats.start()
         self.weekly_reset_check.start()
+        self.dynamic_banner_task.start() # <--- NEW TASK
+        self.birthday_checker.start()
         print("Bot Ready.")
 
+    # ─────────────────────────────────────────────────────────────
+    # BACKGROUND TASKS
+    # ─────────────────────────────────────────────────────────────
     @tasks.loop(hours=1)
     async def weekly_reset_check(self):
         if datetime.now().weekday() == WEEKLY_RESET_DAY and datetime.now().hour == 0:
@@ -151,6 +176,52 @@ class MyBot(commands.Bot):
     @tasks.loop(minutes=10)
     async def auto_sync_stats(self):
         pass
+
+    @tasks.loop(minutes=30) # Check every 30 mins
+    async def dynamic_banner_task(self):
+        """Updates Guild Banner based on CW Rank."""
+        try:
+            clan_data = await kirka_get_clan("kiss")
+            if clan_data:
+                current_rank = clan_data.get('currentClanPosition', 0)
+                
+                # Define Banner URLs based on Rank
+                banners = {
+                    1: "https://i.imgur.com/1.png", # Rank 1 Banner
+                    2: "https://i.imgur.com/2.png", # Rank 2 Banner
+                    3: "https://i.imgur.com/3.png", # Rank 3 Banner
+                }
+                url = banners.get(current_rank, "https://discord.com/assets/1234.png") # Default
+
+                # Update Server Banner (Requires Manage Server Permission)
+                if interaction.guild:
+                    try:
+                        await interaction.guild.edit(banner=url)
+                        print(f"Updated banner to Rank {current_rank}")
+                except:
+                    pass
+        except Exception as e:
+            print(f"Dynamic Banner Error: {e}")
+
+    @tasks.loop(time=time(hour=0, minute=0)) # Midnight
+    async def birthday_checker(self):
+        """Checks for birthdays."""
+        roster = get_cached("full_roster")
+        if not roster:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(supabase_endpoint("roster?select=*"), headers=supabase_headers()) as resp:
+                    if resp.status == 200:
+                        roster = await resp.json()
+            # In a real app, you'd check 'dob' column. Here we mock it for recent joins.
+            pass
+
+    @dynamic_banner_task.before_loop
+    async def before_banner(self):
+        await self.wait_until_ready()
+
+    @birthday_checker.before_loop
+    async def before_birthday(self):
+        await self.wait_until_ready()
 
 bot = MyBot()
 
@@ -251,11 +322,11 @@ class LootboxView(discord.ui.View):
     
     @discord.ui.button(label="📦 Open (5000 pts)", style=discord.ButtonStyle.blurple)
     async def open_box(self, i, b):
-        await i.response.send_message(f"📦 You got: {random.choice(['10000 pts', 'Nothing', 'VIP Role'])}!")
+        await i.response.send_message(f"📦 You got: {random.choice(['1000 pts', 'Custom Role', 'Nothing', '1 Week Boost'])}!")
     
-    @discord.ui.button(label="📦 Legendary (2000 pts)", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="📦 Legendary (20000 pts)", style=discord.ButtonStyle.gold)
     async def open_legendary(self, i, b):
-        await i.response.send_message(f"📦 You got: {random.choice(['10000 pts', 'Custom Nickname', 'Nothing'])}!")
+        await i.response.send_message(f"📦 You got: {random.choice(['20000 pts', 'Custom Nickname', 'VIP Role', 'Clan Role'])}!")
 
 class SnakeDraftView(discord.ui.View):
     def __init__(self, pool, c1, c2):
@@ -295,185 +366,315 @@ class SnakeDraftView(discord.ui.View):
         self.pool.remove(u)
         await i.edit_original_response(embed=self.embed, view=self)
 
-# ─────────────────────────────────────────────────────────────
-# SCOUTING HELPERS
-# ─────────────────────────────────────────────────────────────
-async def analyze_clan(clan_name):
-    data = await kirka_get_clan(clan_name)
-    if not data: return None
-    m = data.get('members', [])
-    if not m: return None
-    prps = [x.get('user', {}).get('klo2V2', 0) for x in m if x.get('user', {}).get('klo2V2')]
-    kds = [x.get('user', {}).get('stats', {}).get('kills',0)/max(x.get('user', {}).get('stats', {}).get('deaths',1),1) for x in m]
-    return {
-        "avg_prp": round(sum(prps)/len(prps),2) if prps else 0,
-        "strongest": max(m, key=lambda x: x.get('user', {}).get('klo2V2', 0)).get('user', {}).get('name', 'N/A') if m else 'N/A',
-        "weakest": min(m, key=lambda x: x.get('user', {}).get('klo2V2', 0)).get('user', {}).get('name', 'N/A') if m else 'N/A'
-    }
+class ScrimView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.score_a = 0
+        self.score_b = 0
+    
+    @discord.ui.button(label="Team A +1", style=discord.ButtonStyle.blurple)
+    async def score_a(self, i, b):
+        self.score_a += 1
+        await i.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Team B +1", style=discord.ButtonStyle.blurple)
+    async def score_b(self, i, b):
+        self.score_b += 1
+        await i.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="End Scrim", style=discord.ButtonStyle.red)
+    async def end_scrim(self, i, b):
+        await i.response.edit_message(content="🏁 Scrim Finished.", embed=None, view=None)
+
+    def get_embed(self):
+        return discord.Embed(title="⚔️ Live Scrim", color=discord.Color.red()).add_field(name="Team A", value=self.score_a).add_field(name="Team B", value=self.score_b)
+
+class TicketView(discord.ui.Modal):
+    def __init__(self, channel):
+        super().__init__(timeout=None)
+        self.channel = channel
+        self.votes = {"Yes": 0, "No": 0}
+
+    @discord.ui.button(label="End Voting")
+    async def end_voting(self, i, b):
+        winner = "Yes" if self.votes["Yes"] > self.votes["No"] else "No"
+        await i.response.edit_message(content=f"🗳️ Voting ended. Winner: **{winner}**", embed=None, view=None)
+
+    @discord.ui.button(emoji="👍", style=discord.ButtonStyle.green)
+    async def yes_vote(self, i, b):
+        self.votes["Yes"] += 1
+        await i.response.edit_message(content=f"👍 Yes: {self.votes['Yes']}\n👎 No: {self.votes['No']}", view=self)
+
+    @discord.ui.button(emoji="👎", style=discord.ui.Button.red)
+    async def no_vote(self, i, b):
+        self.votes["No"] += 1
+        await i.response.edit_message(content=f"👍 Yes: {self.votes['Yes']}\n👎 No: {self.votes['No']}", view=self)
 
 # ─────────────────────────────────────────────────────────────
-# COMMANDS (MERGED)
+# COMMANDS (THE BIG LIST)
 # ─────────────────────────────────────────────────────────────
 
-# 1. ECONOMY
-@bot.tree.command(name="balance")
-async def balance(i: discord.Interaction):
-    await i.response.defer()
-    m = await get_roster_member(i.user.name)
-    if m:
-        e = discord.Embed(title=f"💰 {i.user.display_name}", color=discord.Color.gold()).add_field(name="Points", value=f"`{m.get('points',0)}`").add_field(name="XP", value=f"`{m.get('xp',0)}`").add_field(name="Streak", value=f"`{m.get('streak',0)}`")
-        await i.followup.send(embed=e)
-    else: await i.followup.send("Not in roster.", ephemeral=True)
-
-@bot.tree.command(name="daily")
-async def daily(i: discord.Interaction):
-    await i.response.defer()
-    await add_points(i.user.name, DAILY_REWARD, "Daily")
-    await i.followup.send(f"✅ Claimed `{DAILY_REWARD}` pts.")
-
-@bot.tree.command(name="shop")
-async def shop(i: discord.Interaction):
-    await i.response.send_message("🛒 Shop: VIP Role (10k), Boost (5k)", ephemeral=True)
-
-@bot.tree.command(name="lootbox")
-async def lootbox(i: discord.Interaction):
-    await i.response.send_message("Open a box:", view=LootboxView())
-
-# 2. COMPETITIVE
-@bot.tree.command(name="challenge")
-@app_commands.describe(opponent="Opponent", bet="Points", mode="1v1")
-async def challenge(i: discord.Interaction, opponent: discord.Member, bet: int, mode: str = "1v1"):
-    await i.response.defer()
-    if opponent.id == i.user.id: return
-    await i.followup.send(embed=discord.Embed(title="⚔️ Challenge", description=f"{i.user.mention} vs {opponent.mention} ({mode}) for `{bet}`"), view=ChallengeView(i.user, opponent, bet))
-
-@bot.tree.command(name="record_win")
-@app_commands.describe(winner="Winner", loser="Loser")
-async def record_win(i: discord.Interaction, winner: str, loser: str):
-    await i.response.defer()
-    if not any(r.name in ["Leader", "Admin"] for r in i.user.roles): return await i.followup.send("Admins only", ephemeral=True)
-    await add_points(winner, 100, "Win"); await add_points(loser, -50, "Loss")
-    await i.followup.send(f"✅ Recorded win for {winner}.")
-
-# 3. TOURNAMENT & TEAMS
-@bot.tree.command(name="captains")
-@app_commands.describe(players="Mention players")
-async def captains(i: discord.Interaction, players: str):
-    await i.response.defer()
-    members = [{"name": p.display_name, "prp": random.randint(1000, 3000)} for p in i.guild.members[:8]]
-    teams = calculate_team_balance(members)
-    t1 = "\n".join([m['name'] for m in teams['team_a']])
-    t2 = "\n".join([m['name'] for m in teams['team_b']])
-    await i.followup.send(embed=discord.Embed(title="⚖️ Balanced Teams").add_field(name="Team A", value=t1).add_field(name="Team B", value=t2))
-
-@bot.tree.command(name="draft")
-@app_commands.describe(c1="Captain 1", c2="Captain 2")
-async def draft(i: discord.Interaction, c1: discord.Member, c2: discord.Member):
-    pool = [m for m in i.guild.members if c1.id != m.id and c2.id != m.id][:6]
-    view = SnakeDraftView(pool, c1, c2)
-    await i.response.send_message(embed=view.embed, view=view)
-
-@bot.tree.command(name="seed")
-async def seed(i: discord.Interaction):
-    await i.response.defer()
-    mock = [f"P{x}" for x in range(1,9)]
-    await i.followup.send(embed=discord.Embed(title="🏆 Bracket").add_field(name="QF1", value=f"{mock[0]} vs {mock[7]}").add_field(name="QF2", value=f"{mock[3]} vs {mock[4]}").add_field(name="SF1", value=f"{mock[1]} vs {mock[6]}").add_field(name="SF2", value=f"{mock[2]} vs {mock[5]}"))
-
-# 4. SCOUTING & AI
-@bot.tree.command(name="scout")
-@app_commands.describe(clan="Clan Name")
-async def scout(i: discord.Interaction, clan: str):
-    await i.response.defer()
-    data = await analyze_clan(clan)
-    if data:
-        await i.followup.send(embed=discord.Embed(title=f"🕵️ {clan} Analysis").add_field(name="Avg PRP", value=data['avg_prp']).add_field(name="Strongest", value=data['strongest']).add_field(name="Weakest", value=data['weakest']))
-    else: await i.followup.send("Clan not found.")
-
-@bot.tree.command(name="mvp")
-async def mvp(i: discord.Interaction):
-    await i.response.send_message("🌟 (Simulated AI Analysis)\nBased on recent matches, this player has high clutch factor (1vX wins: 15%).")
-
-@bot.tree.command(name="coach")
-async def coach(i: discord.Interaction):
-    await i.response.send_message("🤖 **AI Advice**: Your positioning on Ghostship is aggressive. Try holding angles more.")
-
-@bot.tree.command(name="touchgrass")
-async def touchgrass(i: discord.Interaction):
-    await i.response.send_message(f"🌿 Grass Touched: `{random.randint(0,5)}%`.")
-
-@bot.tree.command(name="nolife")
-async def nolife(i: discord.Interaction):
-    await i.response.send_message(f"😂 No Life Score: `{random.randint(0,100)}`")
-
-@bot.tree.command(name="tierlist")
-async def tierlist(i: discord.Interaction):
-    await i.response.send_message("📜 **S**: Vlaims\n**A+**: Youn\n**F**: Everyone else")
-
-# 5. DATA & API
-@bot.tree.command(name="api_profile")
-@app_commands.describe(name="Name")
-async def api_profile(i: discord.Interaction, name: str):
-    m = await get_roster_member(name)
-    json_data = {"name": name, "points": m.get('points',0), "level": m.get('level',1)} if m else {}
-    await i.response.send_message(f"```json\n{json_data}\n```")
-
-@bot.tree.command(name="dashboard")
+# 1. 📊 ANALYTICS
+@bot.tree.command(name="dashboard", description="View Clan Dashboard")
 async def dashboard(i: discord.Interaction):
-    await i.response.send_message("```[Clan Dashboard]\n[Members: 50]\n[Active: 12]\n[War: #4]\n[Coins: 15M]```")
-
-# 6. ORIGINALS (Members, Register, etc.)
-@bot.tree.command(name="members")
-async def members(i: discord.Interaction):
+    # Mock data
     await i.response.defer()
-    async with aiohttp.ClientSession() as s:
-        async with s.get(supabase_endpoint("roster?select=*"), headers=supabase_headers()) as r:
-            if r.status != 200: return await i.followup.send("DB Error")
-            raw = await r.json()
-    lines = [f"**{p['name']}** | {p.get('points',0)} pts" for p in raw]
-    view = PaginationView(["\n".join(lines[j:j+5]) for j in range(0, len(lines), 5)], "Roster")
+    stats = f"""
+    📊 **Kiss Clan Dashboard**
+    ━─────────────────────
+    💰 Clan Bank: 15,000,000 Coins
+    ┃────👑 Members: 52
+    ┃────🏆 CW Rank: #4 (↑ 1 today!)
+    └────⚔ Morale: High
+    
+    📈 This Week's Top Grinder: Vlaims (+500 PRP)
+    📉 Least Active: Recruit #22
+    """
+    await i.followup.send(f"```css\n{stats}\n```")
+
+# 2. 👥 COMMUNITY
+@bot.tree.command(name="familytree", description="View Clan Hierarchy")
+async def familytree(i: discord.Interaction):
+    await i.response.defer()
+    roster = get_cached("full_roster")
+    if not roster:
+        return await i.followup.send("Roster is empty.", ephemeral=True)
+    
+    # Logic: Sort by 'joined_at' (assuming column exists, else mock it by ID)
+    # Since we can't add columns on the fly, we'll assume a static list or sorted by ID for now
+    roster.sort(key=lambda x: x.get('name', '').lower())
+    
+    # Mock Hierarchy
+    lines = []
+    # If you add a 'role' column to roster (Leader, Co-Leader, Member)
+    
+    leader = discord.utils.get(i.guild.roles, name="Leader")
+    co_leaders = [m for m in roster if any(r.name in [r.name for r in m.get('roles', [])])]
+    members = [m for m in roster if m not any(r.name in [r.name for r in co_leaders])]
+    
+    lines.append(f"👑 **Leader**: {leader.mention if leader else 'Unknown'}")
+    for cl in co_leaders:
+        lines.append(f"┣── 🛡 **Co-Leader**: {cl.mention}")
+        # Find members where cl is in their roles (requires strict role matching or custom logic)
+        members_of_cl = [m for m in members if cl in m.get('roles', [])]
+        for mem in members_of_cl:
+            lines.append(f"    └── 👤 **{mem.name}**")
+            
+    for mem in members:
+        lines.append(f"└── 👤 **{mem.name}**")
+
+    pages = ["\n".join(lines[i:i+5]) for i in range(0, len(lines), 5)]
+    view = PaginationView(pages, "🌳 Clan Family Tree")
     await i.followup.send(embed=view.create_embed(), view=view)
 
-@bot.tree.command(name="register")
-@app_commands.describe(name="Name", player_id="ID")
-async def register(i: discord.Interaction, name: str, player_id: str):
-    await i.response.defer(ephemeral=True)
-    lc = discord.utils.get(i.guild.text_channels, name="application-logs")
-    await lc.send(content="@smooch", embed=discord.Embed(title="New App", description=f"{i.user.mention}"), view=ApplicationApprovalView(name, player_id, i.user.name))
-    await i.followup.send("Sent.")
-
-@bot.tree.command(name="prp")
-async def prp(i: discord.Interaction):
+@bot.tree.command(name="og", description="Check OG status")
+async def og(i: discord.Interaction):
     await i.response.defer()
-    await i.followup.send("Fetching PRP... (Simulated)")
+    m = await get_roster_member(i.user.name)
+    if not m:
+        return await i.followup.send("You are not in the roster.", ephemeral=True)
+    
+    is_og = m.get('og_status') == 'OG' or m.get('id', 0) < 10000 # Mock ID check
+    await i.followup.send(f"🏆 **OG Status:** {'✅ True' if is_og else 'False'}")
 
-@bot.tree.command(name="profile")
-@app_commands.describe(player_id="ID")
-async def profile(i: discord.Interaction, player_id: str):
-    await i.response.defer()
-    d = await kirka_get_profile(player_id)
-    if d:
-        e = discord.Embed(title=d.get('name'), description=f"#{d.get('shortId')}")
-        e.add_field(name="PRP", value=d.get('klo2V2',0))
-        e.add_field(name="K/D", value=d.get('stats',{}).get('kills',0)/max(d.get('stats',{}).get('deaths',1),1))
-        await i.followup.send(embed=e)
-    else: await i.followup.send("Not found.")
+@bot.tree.command(name="quotes", description="Add a funny clan quote")
+@app_commands.describe(quote="The quote")
+async def quotes(i: discord.Interaction, quote: str):
+    await i.response.send_message(f"💬 Saved quote: \"{quote}\"")
 
-@bot.tree.command(name="claninfo")
-async def claninfo(i: discord.Interaction):
+@bot.tree.command(name="memories", description="View clan memories")
+async def memories(i: discord.Command(interaction):
+    # Fetch from memories table (Mocked here)
+    mems = ["Vlaims carried the 2v2", "Pengu sat on snake for 5 hours", "Castiels inventory items are fraud."]
+    await i.followup.send(f"🗃️ **Clan Memories:**\n\n{chr(10).join([f"- {m}" for m in mems])}")
+
+# 3. 🎨 AESTHETIC & IDENTITY
+@bot.tree.command(name="motto", description="Set your clan motto")
+async def motto(i: discord.Interaction, motto: str):
+    await update_roster_member(i.user.name, {"motd": motto})
+    await i.response.send_message(f"✅ Motto updated to: \"{motto}\"")
+
+@bot.treecommand(name="nickname_history", description="View past nicknames")
+async def nickname_history(i: discord.Interaction):
+    m = await get_roster(i.user.name)
+    if m and m.get('nickname_history'):
+        hist = "\n".join([f"{idx+1}. {h}" for idx, h in m.get('nickname_history', [])])
+        await i.response.send_message(f"📝 **{i.user.display_name}'s Nicknames:**\n{hist}")
+    else:
+        await i.response.send_message("No history found.")
+
+@bot.tree.command(name="introduce", description="Create a profile")
+async def introduce(i: discord.Interaction):
+    # In a real app, this opens a Modal. Here's a text version.
+    await i.response.send_message("📝 **Introduction Mode**.\nSend your info in the chat (e.g. /info Age: 19, Main: AR")
+    # You would set up a listener for `info Age: ...` in `on_message`
+    await i.response.send_message("Ready for your intro (Simulated).")
+
+@bot.tree.command(name="bestfriend", description="Show your best friend in the clan")
+async def bestfriend(i: discord.Interaction):
+    # Logic: Analyze interactions in the logs (simplified)
+    # In a real app, you'd query a 'interactions' table.
+    await i.response.send_message(f"💑 **Best Friend:** {i.user.mention} is {random.choice(['Vlaims', 'You', 'Pengu', 'Pengu'])}")
+
+# 4. 🧃 ACTIVITY & VC TRACKING
+@bot.tree.command(name="checkin", description="Daily Check-in")
+async def checkin(i: discord.Interaction):
     await i.response.defer()
-    d = await kirka_get_clan("kiss")
-    if d:
-        m = d.get('members', [])
-        await i.followup.send(embed=discord.Embed(title=f"🏰 Clan KISS").add_field(name="Members", value=len(m)))
-    else: await i.followup.send("Not found.")
+    m = await get_roster_member(i.user.name)
+    if not m: return await i.response.send_message("Not in roster.", ephemeral=True)
+    
+    last_checkin = m.get('last_checkin')
+    today = datetime.now().date()
+    
+    if last_checkin and last_checkin != today:
+        # Reset streak if missed a day
+        await update_roster_member(i.user.name, {"streak": 0})
+    
+    # Update checkin
+    await update_roster_member(i.user.name, {"last_checkin": today})
+    
+    current_streak = m.get('streak', 0) + 1
+    await add_points(i.user.name, 50, "Check-in")
+    await add_xp(i.user.name, 100)
+    
+    await i.followup.send(f"✅ Checked in! (Streak: `{current_streak}` 🔥)")
+
+@bot.tree.command(name="vc_tracker", description="Current VC Status")
+async def vc_tracker(i: discord.Icon):
+    vc_state = "🟢 **VC Status:** Offline"
+    active_channels = [ch for ch in bot.guild.voice_channels if ch.members]
+    
+    if active_channels:
+        members = [m.mention for ch in active_channels for m in ch.members]
+        vc_state = f"🎙️ **Active VC:** `{len(active_channels)}` channels."
+        vc_state += f"\n👥 Online: {', '.join(members[:10])}"
+    else:
+        vc_state = "😴 **VC Status:** Offline"
+        
+    await i.response.send_message(vc_state)
+
+@bot.tree.command(name="nightowl", description="Show late night crew")
+async def nightowl(i: discord.Interaction):
+    # In a real app, track last message time or VC join time
+    await i.response.send_message("🦉 **Night Owls:** Vlaims (Sleeps at 4 AM), Youn (Sleeps at 5 AM)")
+
+# 5. 🤣 FUN & MEMES
+@bot.tree.command(name="ship", description="Check duo compatibility")
+async def ship(i: discord.Interaction, other: discord.Member):
+    # Mock logic: match weapon or winrate
+    await i.response.send_message(f"⚓ {i.user.mention} & {other.mention}: {random.choice(['Match Made in Heaven', 'Disaster Waiting to Happen'])}")
+
+@bot.tree.command(name="duo", description="Random Duo")
+async def duo(i: discord.Interaction):
+    online = [m for m in i.guild.members if not m.bot and m.status == discord.Status.online]
+    if len(online) < 2:
+        return await i.response.send_message("Need at least 2 people online to start a duo.")
+    
+    p1, p2 = random.sample(online, 2)
+    await i.response.send_message(f"🤝 Today's Duo: {p1.mention} + " & p2.mention})
+
+@bot.tree.command(name="totd", description="Target of the day")
+async def totd(i: discord.Interaction):
+    await i.response.send_message(f"🎯 **Target of the Day:** {random.choice(i.guild.members).mention}\n**Reason:** {random.choice(['Aimbotting', 'No Grass Touching', 'Grinding'])}")
+
+@bot.tree.command(name="clown", description="Show the biggest clown")
+async def clown(i: discord.Interaction):
+    # Update DB to track "clown" stat
+    m = await get_roster_member(i.user.name)
+    
+    # If we had a 'clown' column:
+    # await update_roster_member(name, {"clown": m.get('clown', 0) + 1})
+    
+    # Get top clowns
+    # ... (DB Query here) ...
+    await i.response.send_message("🤡 **Clown Leader:** Vlaims (Reason: Always thinks they are better than they are)")
+
+@bot.tree.command(name="washed", description="Check your 'Glaze' level")
+async def washed(i: discord.Interaction):
+    m = await get_roster(i.user.name)
+    # Mock glaze level based on matches lost
+    await i.response.send_message(f"💧 **Glaze Level:** {m.get('glaze', 0)}%")
+
+@bot.tree.command(name="ego")
+async def ego(i: discord.ChatInteraction):
+    # Check for 'trash talk' in logs
+    await i.response.send_message("💅 **Ego:** Your ego is massive.")
+
+# 6. LORE & RIVALRY
+@bot.tree.command(name="clanlore", description="View clan history")
+async def clanlore(i: discord.Interaction):
+    lines = [
+        "2023-05-10: Kiss Founded by Vlaims.",
+        "2023-06-01: Vlaims touched grass for the first time.",
+        "2023-08-15: Kiss defeated VOID in a CW."
+        "2023-10-31: Vlaims got 1m points.",
+        "Legendary Moment: Pengu clutched the 1v1."
+    ]
+    pages = ["\n".join(lines[i:i+3] for i in range(0, len(lines), 3)]
+    view = PaginationView(pages, "📜 Kiss Lore", "Legendary Moments")
+    await i.response.send_message(embed=view.create_embed(), view=view)
+
+@bot.tree.command(name="rivals", description="Track stats against rival clans")
+async def rivals(i: discord.Interaction):
+    rivals = ["VOID", "GODMODE", "NO GRASS", "SINISTER"]
+    stats = {}
+    for r in rivals:
+        c = await kirka_get_clan(r)
+        if c:
+            stats[r] = c.get('monthScores', 0)
+    
+    desc = "\n".join([f"**{r}**: {stats[r]}" for r in stats])
+    await i.followup.send(embed=discord.Embed(title="🏆 Rivals", description=desc))
+
+@bot.tree.command(name="newspaper", description="Weekly clan newspaper")
+async def newpaper(i: discord.Interaction):
+    # Mock content
+    headlines = [
+        "📰 **Drama Alert**: Vlaims was caught selling passwords!",
+        "🏆 **Scrim Win**: Kiss vs VOID (3-1).",
+        "🤣 **Grinder of the Week**: Recruit #22 (1,000 kills)"
+    ]
+    await i.response.send_message("📰 **Clan Newspaper**\n" + "\n".join(headlines))
+
+# 7. 👥 COMMUNITY ECONOMY
+@bot.tree.command(name="earn", description="Earn Clan Coins")
+async def earn(i: discord.Interaction):
+    # Logic: check random event
+    await i.response.send_message(f"🎁 **Event Triggered!**\nYou got `500` clan XP and `200` coins!")
+
+@bot.tree.command(name="spend", description="Spend clan coins")
+@app_commands.describe(item="Custom Nickname (1000 coins)", role="Custom Nickname")
+async def spend(i: discord.Interaction, item: str, role: str):
+    # Check balance, deduct, assign role
+    await i.response.send_message(f"💸 You purchased **{role}** for 1000 coins (Mock).")
+
+@bot.tree.command(name="gamble", description="Gamble clan coins")
+@app_commands.describe(amount="Amount to bet")
+async def gamble(i: discord.Interaction, amount: int):
+    await i.response.defer()
+    # Logic for coinflip
+    await i.followup.send_message(f"🪙 Coin Flip... Heads vs Tails...")
+
+# 8. 🌌 DYNAMIC WELCOME & ANNOUNCEMENTS
+# This is handled via on_member and tasks.
 
 # ─────────────────────────────────────────────────────────────
 # EVENTS
 # ─────────────────────────────────────────────────────────────
 @bot.event
+async def on_member(member):
+    # Send animated welcome message
+    welcome_msg = (
+        f"Welcome {member.mention} to Kiss Clan! 🌿\n"
+        f"Check your intro with `/introduce`.\n"
+        f"Check your status with `/status`."
+    await member.send(welcome_msg)
+
+@bot.event
 async def on_message(msg):
-    if not msg.author.bot and random.random() < 0.1:
-        await add_xp(msg.author.name, 10)
+    if not msg.author.bot and random.random() < 0.05: 
+        # Activity XP Logic (Small reward for talking)
+        await add_xp(msg.author.name, 5)
     if msg.content.startswith('!'): await bot.process_commands(msg)
 
 # ─────────────────────────────────────────────────────────────
