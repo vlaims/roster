@@ -3,6 +3,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
+import asyncio
+import time
+from functools import wraps
 
 # ─────────────────────────────────────────────────────────────
 # CONFIG
@@ -10,6 +13,10 @@ import aiohttp
 # ─────────────────────────────────────────────────────────────
 KIRKA_API_KEY  = os.environ.get('KIRKA_API_KEY', '573d64dc39e83332e2237c1fd5fc2a991958c4d0225bcfbd307ee2a3a456d473')
 KIRKA_BASE_URL = "https://api.kirka.io"
+API_CACHE = {}
+CACHE_DURATION = 60  # seconds
+
+http_session = None
 
 def kirka_headers():
     return {
@@ -25,18 +32,49 @@ def to_fancy_font(text):
     fancy_chars  = "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
     trans = str.maketrans(normal_chars, fancy_chars)
     return str(text).translate(trans)
+    
+    def make_embed(title, description="", color=discord.Color.from_rgb(63, 207, 142)):
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color
+    )
+    embed.set_footer(text="Made by vlaims • api.kirka.io")
+    return embed
 
 
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True
-        super().__init__(command_prefix="!", intents=intents)
+
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            help_command=None
+        )
 
     async def setup_hook(self):
+        global http_session
+
+        http_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=10)
+        )
+
         TEST_GUILD = discord.Object(id=841573598799593472)
+
         self.tree.copy_global_to(guild=TEST_GUILD)
         await self.tree.sync(guild=TEST_GUILD)
+
+        print(f"✅ Logged in as {self.user}")
+
+    async def close(self):
+        global http_session
+
+        if http_session:
+            await http_session.close()
+
+        await super().close()
 
 
 bot = MyBot()
@@ -55,6 +93,52 @@ async def kirka_get_profile(short_id: str):
             async with session.post(
                 f"{KIRKA_BASE_URL}/api/user/getProfile",
                 headers=kirka_headers(),
+                def get_cached(key):
+    data = API_CACHE.get(key)
+
+    if not data:
+        return None
+
+    if time.time() - data["time"] > CACHE_DURATION:
+        del API_CACHE[key]
+        return None
+
+    return data["value"]
+
+
+def set_cache(key, value):
+    API_CACHE[key] = {
+        "value": value,
+        "time": time.time()
+    }
+
+    def cooldown(seconds: int):
+    cooldowns = {}
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(interaction: discord.Interaction, *args, **kwargs):
+            user_id = interaction.user.id
+
+            now = time.time()
+
+            if user_id in cooldowns:
+                remaining = cooldowns[user_id] - now
+
+                if remaining > 0:
+                    await interaction.response.send_message(
+                        f"⏳ Slow down. Try again in `{remaining:.1f}s`",
+                        ephemeral=True
+                    )
+                    return
+
+            cooldowns[user_id] = now + seconds
+
+            return await func(interaction, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
                 json={"id": clean_id, "isShortId": True},
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
@@ -361,7 +445,12 @@ async def prp(interaction: discord.Interaction):
         total = len(roster_data)
         status_msg = await interaction.followup.send(f"🔍 Fetching stats for {total} players...")
         results = []
-        for idx, player in enumerate(roster_data, 1):
+        tasks = [
+    kirka_get_profile(player.get('player_id', '').strip())
+    for player in roster_data
+]
+
+profiles = await asyncio.gather(*tasks)
             player_id = player.get('player_id', '').strip()
             name      = player.get('name', 'Unknown')
             if idx % 3 == 1:
@@ -402,12 +491,101 @@ async def prp(interaction: discord.Interaction):
         print(f"PRP COMMAND ERROR: {e}")
         await interaction.followup.send(f"Failed to fetch stats: {e}")
 
+        async def kirka_get_profile(short_id: str):
+    clean_id = short_id.replace('#', '').strip().upper()
+
+    if not clean_id:
+        return None
+
+    cache_key = f"profile:{clean_id}"
+    cached = get_cached(cache_key)
+
+    if cached:
+        return cached
+
+    try:
+        async with http_session.post(
+            f"{KIRKA_BASE_URL}/api/user/getProfile",
+            headers=kirka_headers(),
+            json={
+                "id": clean_id,
+                "isShortId": True
+            }
+        ) as resp:
+
+            if resp.status == 201:
+                data = await resp.json()
+
+                set_cache(cache_key, data)
+
+                return data
+
+            print(f"[Kirka] Failed profile lookup: {clean_id}")
+
+            return None
+
+    except Exception as e:
+        print(f"[Kirka] Profile error: {e}")
+        return None
+
+        @bot.tree.command(name="topkd", description="Top K/D players in the roster")
+async def topkd(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    supabase_url = os.environ.get('SUPABASE_URL')
+    supabase_key = os.environ.get('SUPABASE_KEY')
+
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}"
+    }
+
+    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/roster?select=*"
+
+    async with http_session.get(endpoint, headers=headers) as response:
+        roster = await response.json()
+
+    players = []
+
+    for player in roster:
+        profile = await kirka_get_profile(player["player_id"])
+
+        if not profile:
+            continue
+
+        stats = profile.get("stats", {})
+
+        kills = stats.get("kills", 0)
+        deaths = stats.get("deaths", 1)
+
+        kd = round(kills / deaths, 2)
+
+        players.append({
+            "name": player["name"],
+            "kd": kd
+        })
+
+    players.sort(key=lambda x: x["kd"], reverse=True)
+
+    text = ""
+
+    for i, p in enumerate(players[:10], 1):
+        text += f"**{i}.** {to_fancy_font(p['name'])} — `{p['kd']}`\n"
+
+    embed = make_embed(
+        "🎯 Highest K/D Players",
+        text
+    )
+
+    await interaction.followup.send(embed=embed)
+
 
 # ─────────────────────────────────────────────────────────────
 # COMMAND 5: /profile — Look up any player's full profile
 # ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="profile", description="Look up a Kirka player's profile by their short ID")
 @app_commands.describe(player_id="The player's short ID (e.g. XMNVRX)")
+@cooldown(5)
 async def profile(interaction: discord.Interaction, player_id: str):
     await interaction.response.defer()
     data = await kirka_get_profile(player_id)
@@ -437,6 +615,80 @@ async def profile(interaction: discord.Interaction, player_id: str):
     embed.add_field(name="Scores",    value=f"`{stats.get('scores', 0):,}`",    inline=True)
     embed.set_footer(text="Data from api.kirka.io | Made by vlaims")
     await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="compare", description="Compare two Kirka players")
+async def compare(interaction: discord.Interaction, player1: str, player2: str):
+    await interaction.response.defer()
+
+    p1 = await kirka_get_profile(player1)
+    p2 = await kirka_get_profile(player2)
+
+    if not p1 or not p2:
+        await interaction.followup.send("❌ Failed to fetch one or both players.")
+        return
+
+    def kd(stats):
+        kills = stats.get("kills", 0)
+        deaths = stats.get("deaths", 1)
+
+        return round(kills / deaths, 2)
+
+    embed = make_embed(
+        f"⚔️ {p1['name']} vs {p2['name']}"
+    )
+
+    embed.add_field(
+        name=p1["name"],
+        value=(
+            f"Level: `{p1.get('level', 0)}`\n"
+            f"KD: `{kd(p1['stats'])}`\n"
+            f"PRP: `{p1.get('klo2V2', 0):,.2f}`"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name=p2["name"],
+        value=(
+            f"Level: `{p2.get('level', 0)}`\n"
+            f"KD: `{kd(p2['stats'])}`\n"
+            f"PRP: `{p2.get('klo2V2', 0):,.2f}`"
+        ),
+        inline=True
+    )
+
+    await interaction.followup.send(embed=embed)
+
+    @profile.autocomplete("player_id")
+async def profile_autocomplete(interaction: discord.Interaction, current: str):
+    suggestions = []
+
+    supabase_url = os.environ.get('SUPABASE_URL')
+    supabase_key = os.environ.get('SUPABASE_KEY')
+
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}"
+    }
+
+    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/roster?select=*"
+
+    async with http_session.get(endpoint, headers=headers) as response:
+        roster = await response.json()
+
+    for player in roster[:25]:
+        name = player.get("name", "")
+        pid  = player.get("player_id", "")
+
+        if current.lower() in name.lower():
+            suggestions.append(
+                app_commands.Choice(
+                    name=f"{name} ({pid})",
+                    value=pid
+                )
+            )
+
+    return suggestions[:25]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -511,5 +763,40 @@ async def ranked2v2(interaction: discord.Interaction):
     view  = PaginationView(pages=pages, title=title)
     await interaction.followup.send(embed=view.create_embed(), view=view)
 
+    @bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error):
+    print(f"[ERROR] {error}")
 
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                "❌ Something went wrong.",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                "❌ Something went wrong.",
+                ephemeral=True
+            )
+    except:
+        pass
+
+@bot.event
+async def on_ready():
+    print("=" * 50)
+    print(f"Logged in as: {bot.user}")
+    print(f"Servers: {len(bot.guilds)}")
+    print("=" * 50)
+
+required_env = [
+    "DISCORD_TOKEN",
+    "SUPABASE_URL",
+    "SUPABASE_KEY"
+]
+
+for var in required_env:
+    if not os.environ.get(var):
+        raise RuntimeError(f"Missing environment variable: {var}")
+
+        
 bot.run(os.environ.get('DISCORD_TOKEN'))
