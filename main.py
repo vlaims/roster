@@ -3,6 +3,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
+import random
 
 # ─────────────────────────────────────────────────────────────
 # CONFIG
@@ -19,6 +20,31 @@ def kirka_headers():
     }
 
 
+# 🎨 E-GIRL PERSONALITY GENERATOR
+def get_egirl_suffix():
+    """Returns a random E-girl expression"""
+    expressions = [
+        "~ >w< :3",
+        "~ <3 0w0",
+        "~ *w*",
+        "~ >~<",
+        "~ ~w~",
+        "~ uwu",
+        "~ owo",
+        "*oni-chan >~<",
+        "~ ^w^",
+        "~ (´。• ᵕ •。`)",
+        "~ <//3",
+        "~ ✨💕",
+    ]
+    return random.choice(expressions)
+
+
+def add_egirl_personality(text: str) -> str:
+    """Add E-girl personality to a message"""
+    return f"{text} {get_egirl_suffix()}"
+
+
 # 🎨 HELPER: Fancy Bold Serif font mapper
 def to_fancy_font(text):
     normal_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -31,6 +57,7 @@ class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True
+        intents.message_content = True  # 🚨 REQUIRED for reading message content
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
@@ -40,6 +67,48 @@ class MyBot(commands.Bot):
 
 
 bot = MyBot()
+
+
+# ─────────────────────────────────────────────────────────────
+# 👂 MESSAGE LISTENERS - BOT RESPONDS TO PINGS/REPLIES
+# ─────────────────────────────────────────────────────────────
+@bot.event
+async def on_message(message: discord.Message):
+    # Ignore bot's own messages
+    if message.author == bot.user:
+        await bot.process_commands(message)
+        return
+    
+    should_respond = False
+    
+    # Check if bot is mentioned
+    if bot.user in message.mentions:
+        should_respond = True
+    
+    # Check if message is a reply to the bot
+    if message.reference:
+        try:
+            replied_msg = await message.channel.fetch_message(message.reference.message_id)
+            if replied_msg.author == bot.user:
+                should_respond = True
+        except Exception:
+            pass
+    
+    # Respond if conditions are met
+    if should_respond:
+        responses = [
+            add_egirl_personality("h-hewwo oni-chan~ 💕"),
+            add_egirl_personality("y-you called me? 🥺"),
+            add_egirl_personality("what do u need sempai~ 💗"),
+            add_egirl_personality("i'm here for you darling~"),
+            add_egirl_personality("hai hai~ what's up~ 💕✨"),
+            add_egirl_personality("*blushes* y-yes?"),
+            add_egirl_personality("ready to help you~ 💫"),
+            add_egirl_personality("o-oh my~ >///< "),
+        ]
+        await message.reply(random.choice(responses), mention_author=False)
+    
+    await bot.process_commands(message)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -124,7 +193,7 @@ class PaginationView(discord.ui.View):
     def create_embed(self):
         desc = (f"### {self.total_label}\n\n" if self.total_label else "") + self.pages[self.current_page]
         embed = discord.Embed(title=self.title, description=desc, color=discord.Color.from_rgb(63, 207, 142))
-        embed.set_footer(text=f"Page {self.current_page + 1} of {len(self.pages)} | Made by vlaims")
+        embed.set_footer(text=f"Page {self.current_page + 1} of {len(self.pages)} | Made by vlaims {get_egirl_suffix()}")
         return embed
 
     @discord.ui.button(label="<--", style=discord.ButtonStyle.green, custom_id="prev_btn")
@@ -175,7 +244,7 @@ class ApplicationApprovalView(discord.ui.View):
             async with aiohttp.ClientSession() as session:
                 async with session.post(target_endpoint, headers=headers, json=payload) as response:
                     if response.status in [200, 201]:
-                        embed = discord.Embed(title="Application Approved", color=discord.Color.green())
+                        embed = discord.Embed(title=add_egirl_personality("Application Approved"), color=discord.Color.green())
                         embed.add_field(name="Name", value=f"`{self.name}`", inline=True)
                         embed.add_field(name="Kirka ID", value=f"`{self.player_id}`", inline=True)
                         embed.add_field(name="Approved by", value=interaction.user.mention, inline=False)
@@ -191,14 +260,14 @@ class ApplicationApprovalView(discord.ui.View):
                                     await member.remove_roles(applicator_role)
                         await interaction.edit_original_response(embed=embed, view=None)
                     else:
-                        await interaction.followup.send(f"Failed to insert row (HTTP: `{response.status}`)", ephemeral=True)
+                        await interaction.followup.send(add_egirl_personality(f"Failed to insert row (HTTP: `{response.status}`)"), ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"Database error: {e}", ephemeral=True)
+            await interaction.followup.send(add_egirl_personality(f"Database error: {e}"), ephemeral=True)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red, custom_id="decline_btn")
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        embed = discord.Embed(title="Application Declined", color=discord.Color.red())
+        embed = discord.Embed(title=add_egirl_personality("Application Declined"), color=discord.Color.red())
         embed.add_field(name="Character Name", value=f"`{self.name}`", inline=True)
         embed.add_field(name="Declined by", value=interaction.user.mention, inline=False)
         guild = interaction.guild
@@ -214,7 +283,7 @@ class ApplicationApprovalView(discord.ui.View):
                 if applicator_role:
                     await member.remove_roles(applicator_role)
                 try:
-                    await member.send("Your application got rejected your a fucking chud get better 😂😂😂")
+                    await member.send(add_egirl_personality("Your application got rejected your a fucking chud get better 😂😂😂"))
                 except discord.Forbidden:
                     pass
         await interaction.edit_original_response(embed=embed, view=None)
@@ -229,7 +298,7 @@ async def members(interaction: discord.Interaction):
     supabase_url = os.environ.get('SUPABASE_URL')
     supabase_key = os.environ.get('SUPABASE_KEY')
     if not supabase_url or not supabase_key:
-        await interaction.followup.send("Error: Supabase credentials are missing.")
+        await interaction.followup.send(add_egirl_personality("Error: Supabase credentials are missing."))
         return
     target_endpoint = f"{supabase_url.rstrip('/')}/rest/v1/roster?select=*&order=name.desc"
     headers = {"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"}
@@ -237,11 +306,11 @@ async def members(interaction: discord.Interaction):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.get(target_endpoint, headers=headers) as response:
                 if response.status != 200:
-                    await interaction.followup.send(f"Supabase error. (Code: `{response.status}`)")
+                    await interaction.followup.send(add_egirl_personality(f"Supabase error. (Code: `{response.status}`)"))
                     return
                 raw_data = await response.json()
         if not raw_data or not isinstance(raw_data, list):
-            await interaction.followup.send("Roster table is currently empty.")
+            await interaction.followup.send(add_egirl_personality("Roster table is currently empty."))
             return
         total_players = len(raw_data)
         vlaims_record = None
@@ -266,7 +335,7 @@ async def members(interaction: discord.Interaction):
         await interaction.followup.send(embed=view.create_embed(), view=view)
     except Exception as e:
         print(f"SUPABASE FETCH ERROR: {e}")
-        await interaction.followup.send("Failed to fetch roster data.")
+        await interaction.followup.send(add_egirl_personality("Failed to fetch roster data."))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -276,21 +345,21 @@ async def members(interaction: discord.Interaction):
 @app_commands.describe(name="Your name", player_id="Your in-game ID")
 async def register(interaction: discord.Interaction, name: str, player_id: str):
     if interaction.channel.name not in ["apply", "general"]:
-        await interaction.response.send_message("Use this command in `#apply` or `#general`.", ephemeral=True)
+        await interaction.response.send_message(add_egirl_personality("Use this command in `#apply` or `#general`."), ephemeral=True)
         return
     # Check applicator role
     applicator_role = discord.utils.get(interaction.guild.roles, name="applicator")
     if not applicator_role or applicator_role not in interaction.user.roles:
-        await interaction.response.send_message("❌ You need the `applicator` role to apply.", ephemeral=True)
+        await interaction.response.send_message(add_egirl_personality("❌ You need the `applicator` role to apply."), ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     logs_channel = discord.utils.get(interaction.guild.text_channels, name="application-logs")
     admin_role   = discord.utils.get(interaction.guild.roles, name="leader")
     if not logs_channel:
-        await interaction.followup.send("Logs channel not found.", ephemeral=True)
+        await interaction.followup.send(add_egirl_personality("Logs channel not found."), ephemeral=True)
         return
     log_embed = discord.Embed(
-        title="New Roster Registration Pending",
+        title=add_egirl_personality("New Roster Registration Pending"),
         description=f"Applicant: {interaction.user.mention}",
         color=discord.Color.orange()
     )
@@ -299,7 +368,7 @@ async def register(interaction: discord.Interaction, name: str, player_id: str):
     view = ApplicationApprovalView(name=name, player_id=player_id, discord_handle=interaction.user.name)
     ping = admin_role.mention if admin_role else "@smooch"
     await logs_channel.send(content=ping, embed=log_embed, view=view)
-    await interaction.followup.send("Application sent to administrators.", ephemeral=True)
+    await interaction.followup.send(add_egirl_personality("Application sent to administrators."), ephemeral=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -319,18 +388,18 @@ async def kick(interaction: discord.Interaction, name: str):
                 if response.status == 200:
                     deleted_data = await response.json()
                     if not deleted_data:
-                        await interaction.followup.send(f"Could not find a player named `{name}` in the database.")
+                        await interaction.followup.send(add_egirl_personality(f"Could not find a player named `{name}` in the database."))
                         return
                     embed = discord.Embed(
-                        title="Player Removed",
-                        description=f"**{to_fancy_font(name)}** has been removed from the clan roster.",
+                        title=add_egirl_personality("Player Removed"),
+                        description=add_egirl_personality(f"**{to_fancy_font(name)}** has been removed from the clan roster."),
                         color=discord.Color.red()
                     )
                     await interaction.followup.send(embed=embed)
                 else:
-                    await interaction.followup.send(f"Failed to delete player. (HTTP Error: `{response.status}`)")
+                    await interaction.followup.send(add_egirl_personality(f"Failed to delete player. (HTTP Error: `{response.status}`)"))
     except Exception as e:
-        await interaction.followup.send(f"Critical error: {e}")
+        await interaction.followup.send(add_egirl_personality(f"Critical error: {e}"))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -344,7 +413,7 @@ async def prp(interaction: discord.Interaction):
     supabase_url = os.environ.get('SUPABASE_URL')
     supabase_key = os.environ.get('SUPABASE_KEY')
     if not supabase_url or not supabase_key:
-        await interaction.followup.send("Error: Supabase credentials are missing.")
+        await interaction.followup.send(add_egirl_personality("Error: Supabase credentials are missing."))
         return
     target_endpoint = f"{supabase_url.rstrip('/')}/rest/v1/roster?select=*"
     headers = {"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"}
@@ -352,21 +421,21 @@ async def prp(interaction: discord.Interaction):
         async with aiohttp.ClientSession() as session:
             async with session.get(target_endpoint, headers=headers) as response:
                 if response.status != 200:
-                    await interaction.followup.send(f"Database error. (Code: `{response.status}`)")
+                    await interaction.followup.send(add_egirl_personality(f"Database error. (Code: `{response.status}`)"))
                     return
                 roster_data = await response.json()
         if not roster_data:
-            await interaction.followup.send("No players found in the roster.")
+            await interaction.followup.send(add_egirl_personality("No players found in the roster."))
             return
         total = len(roster_data)
-        status_msg = await interaction.followup.send(f"🔍 Fetching stats for {total} players...")
+        status_msg = await interaction.followup.send(add_egirl_personality(f"🔍 Fetching stats for {total} players..."))
         results = []
         for idx, player in enumerate(roster_data, 1):
             player_id = player.get('player_id', '').strip()
             name      = player.get('name', 'Unknown')
             if idx % 3 == 1:
                 try:
-                    await status_msg.edit(content=f"🔍 Fetching stats… ({idx}/{total}) — **{name}**")
+                    await status_msg.edit(content=add_egirl_personality(f"🔍 Fetching stats… ({idx}/{total}) — **{name}**"))
                 except Exception:
                     pass
             if player_id:
@@ -383,7 +452,7 @@ async def prp(interaction: discord.Interaction):
             else:
                 results.append({'name': name, 'prp': 0.0, 'kd': 0.0, 'found': False})
         results.sort(key=lambda x: x['prp'], reverse=True)
-        embed = discord.Embed(title="🏆 Ranked 2v2 Leaderboard", color=discord.Color.gold())
+        embed = discord.Embed(title=add_egirl_personality("🏆 Ranked 2v2 Leaderboard"), color=discord.Color.gold())
         leaderboard_text = ""
         for idx, p in enumerate(results, 1):
             fancy_name  = to_fancy_font(p['name'])
@@ -396,11 +465,11 @@ async def prp(interaction: discord.Interaction):
                 f"┗ K/D: `{kd_display}`\n\n"
             )
         embed.description = leaderboard_text
-        embed.set_footer(text="Data from api.kirka.io | Made by vlaims")
+        embed.set_footer(text=f"Data from api.kirka.io | Made by vlaims {get_egirl_suffix()}")
         await status_msg.edit(content=None, embed=embed)
     except Exception as e:
         print(f"PRP COMMAND ERROR: {e}")
-        await interaction.followup.send(f"Failed to fetch stats: {e}")
+        await interaction.followup.send(add_egirl_personality(f"Failed to fetch stats: {e}"))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -412,7 +481,7 @@ async def profile(interaction: discord.Interaction, player_id: str):
     await interaction.response.defer()
     data = await kirka_get_profile(player_id)
     if not data:
-        await interaction.followup.send(f"❌ Could not find a player with ID `{player_id}`.")
+        await interaction.followup.send(add_egirl_personality(f"❌ Could not find a player with ID `{player_id}`."))
         return
     stats  = data.get('stats', {})
     kills  = stats.get('kills', 0) or 0
@@ -421,7 +490,7 @@ async def profile(interaction: discord.Interaction, player_id: str):
     prp    = data.get('klo2V2', 0)
 
     embed = discord.Embed(
-        title=f"{data.get('name', 'Unknown')}  •  #{data.get('shortId', player_id)}",
+        title=add_egirl_personality(f"{data.get('name', 'Unknown')}  •  #{data.get('shortId', player_id)}"),
         color=discord.Color.from_rgb(63, 207, 142)
     )
     embed.add_field(name="Level",    value=data.get('level', 'N/A'),  inline=True)
@@ -435,7 +504,7 @@ async def profile(interaction: discord.Interaction, player_id: str):
     embed.add_field(name="Games",     value=f"`{stats.get('games', 0):,}`",  inline=True)
     embed.add_field(name="Headshots", value=f"`{stats.get('headshots', 0):,}`", inline=True)
     embed.add_field(name="Scores",    value=f"`{stats.get('scores', 0):,}`",    inline=True)
-    embed.set_footer(text="Data from api.kirka.io | Made by vlaims")
+    embed.set_footer(text=f"Data from api.kirka.io | Made by vlaims {get_egirl_suffix()}")
     await interaction.followup.send(embed=embed)
 
 
@@ -447,13 +516,13 @@ async def claninfo(interaction: discord.Interaction):
     await interaction.response.defer()
     data = await kirka_get_clan("kiss")
     if not data:
-        await interaction.followup.send("❌ Could not fetch clan data from Kirka.")
+        await interaction.followup.send(add_egirl_personality("❌ Could not fetch clan data from Kirka."))
         return
     members = data.get('members', [])
     members_sorted = sorted(members, key=lambda m: m.get('monthScores', 0), reverse=True)
     # Overview embed
     overview = discord.Embed(
-        title=f"🏰 Clan: {data.get('name', 'kiss').upper()}",
+        title=add_egirl_personality(f"🏰 Clan: {data.get('name', 'kiss').upper()}"),
         description=data.get('description') or '',
         color=discord.Color.from_rgb(63, 207, 142)
     )
@@ -461,7 +530,7 @@ async def claninfo(interaction: discord.Interaction):
     overview.add_field(name="Clan War Rank",   value=f"`#{data.get('currentClanWarPosition','?')}`", inline=True)
     overview.add_field(name="Month Scores",    value=f"`{data.get('monthScores', 0):,}`",          inline=True)
     overview.add_field(name="All-Time Scores", value=f"`{data.get('allScores', 0):,}`",            inline=True)
-    overview.set_footer(text="Data from api.kirka.io | Made by vlaims")
+    overview.set_footer(text=f"Data from api.kirka.io | Made by vlaims {get_egirl_suffix()}")
     # Build member pages (5 per page)
     lines = []
     for idx, m in enumerate(members_sorted, 1):
@@ -476,7 +545,7 @@ async def claninfo(interaction: discord.Interaction):
             f"┗ Month Scores: `{month_scores:,}`"
         )
     pages = ["\n\n".join(lines[i:i+5]) for i in range(0, len(lines), 5)]
-    view  = PaginationView(pages=pages, title="🏰 Kiss Clan Members", total_label=f"Total Members: {len(members)}")
+    view  = PaginationView(pages=pages, title=add_egirl_personality("🏰 Kiss Clan Members"), total_label=f"Total Members: {len(members)}")
     await interaction.followup.send(embed=overview)
     await interaction.followup.send(embed=view.create_embed(), view=view)
 
@@ -489,12 +558,12 @@ async def ranked2v2(interaction: discord.Interaction):
     await interaction.response.defer()
     data = await kirka_get_ranked2v2()
     if not data:
-        await interaction.followup.send("❌ Could not fetch ranked 2v2 leaderboard from Kirka.")
+        await interaction.followup.send(add_egirl_personality("❌ Could not fetch ranked 2v2 leaderboard from Kirka."))
         return
     results = data.get('results', [])
     season  = data.get('season')
     if not results:
-        await interaction.followup.send("The ranked 2v2 leaderboard is currently empty (no active season).")
+        await interaction.followup.send(add_egirl_personality("The ranked 2v2 leaderboard is currently empty (no active season)."))
         return
     lines = []
     for idx, entry in enumerate(results, 1):
@@ -507,7 +576,7 @@ async def ranked2v2(interaction: discord.Interaction):
             f"┗ PRP: `{prp:,.2f}`"
         )
     pages = ["\n\n".join(lines[i:i+10]) for i in range(0, len(lines), 10)]
-    title = f"🏆 Global Ranked 2v2 Leaderboard" + (f" — Season {season}" if season else "")
+    title = add_egirl_personality(f"🏆 Global Ranked 2v2 Leaderboard" + (f" — Season {season}" if season else ""))
     view  = PaginationView(pages=pages, title=title)
     await interaction.followup.send(embed=view.create_embed(), view=view)
 
