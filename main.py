@@ -12,7 +12,7 @@ import io
 from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────────────────────
-# LOGGING SETUP
+# LOGGING
 # ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -23,32 +23,13 @@ logging.basicConfig(
 log = logging.getLogger("RailwayBot")
 
 # ─────────────────────────────────────────────────────────────
-# ENVIRONMENT CHECKS
+# ENV CHECKS (Soft Fail - Don't exit if missing vars during dev)
 # ─────────────────────────────────────────────────────────────
 DISCORD_TOKEN  = os.environ.get('DISCORD_TOKEN')
 SUPABASE_URL   = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY   = os.environ.get('SUPABASE_KEY')
-KIRKA_API_KEY  = os.environ.get('KIRKA_API_KEY')
+KIRKA_API_KEY  = os.environ.get('KIRKA_API_KEY', '573d64dc39e83332e2237c1fd5fc2a991958c4d0225bcfbd307ee2a3a456d473')
 
-log.info("Checking Environment Variables...")
-if not DISCORD_TOKEN:
-    log.critical("❌ CRASH: DISCORD_TOKEN is missing.")
-    sys.exit(1)
-if not SUPABASE_URL:
-    log.critical("❌ CRASH: SUPABASE_URL is missing.")
-    sys.exit(1)
-if not SUPABASE_KEY:
-    log.critical("❌ CRASH: SUPABASE_KEY is missing.")
-    sys.exit(1)
-if not KIRKA_API_KEY:
-    log.critical("❌ CRASH: KIRKA_API_KEY is missing.")
-    sys.exit(1)
-
-log.info("✅ All Environment Variables found.")
-
-# ─────────────────────────────────────────────────────────────
-# CONFIG & CONSTANTS
-# ─────────────────────────────────────────────────────────────
 KIRKA_BASE_URL = "https://api.kirka.io"
 API_CACHE      = {}
 CACHE_DURATION = 60
@@ -56,6 +37,10 @@ API_SEMAPHORE = asyncio.Semaphore(5)
 
 TIER_ORDER      = ["S", "A+", "A", "B", "C", "F"]
 TIER_MULTIPLIER = {"S": 3.0, "A+": 2.5, "A": 2.0, "B": 1.5, "C": 1.0, "F": 0.5}
+
+SHOP_ITEMS = {
+    "booster": {"id": "booster", "name": "XP Booster", "price": 500, "desc": "A temporary role for attention."},
+}
 
 SCRIM_STATE = {"active": False, "score_a": 0, "score_b": 0}
 http_session = None
@@ -101,20 +86,34 @@ class MyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = True 
+        # Removed 'presences' intent to be safe
         super().__init__(command_prefix="!", intents=intents, help_command=None)
 
     async def setup_hook(self):
         global http_session
-        log.info("Initializing HTTP Session...")
         http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
+        
         self.background_cache.start()
-        log.info("✅ Bot setup complete.")
+        self.inactivity_checker.start()
+        
+        # Sync commands (Be careful with rate limits)
+        try:
+            guild_id = os.environ.get('GUILD_ID')
+            if guild_id:
+                guild = discord.Object(id=int(guild_id))
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+            else:
+                await self.tree.sync()
+            log.info("✅ Commands synced.")
+        except Exception as e:
+            log.error(f"Sync failed: {e}")
 
     async def close(self):
         self.background_cache.cancel()
+        self.inactivity_checker.cancel()
         global http_session
-        if http_session: 
-            await http_session.close()
+        if http_session: await http_session.close()
         await super().close()
 
 bot = MyBot()
@@ -130,12 +129,34 @@ async def background_cache():
             if resp.status == 200:
                 data = await resp.json()
                 set_cache("full_roster", data)
-    except Exception as e:
-        log.error(f"Cache error: {e}")
+    except Exception: pass
 
 @background_cache.before_loop
 async def before_cache():
     await bot.wait_until_ready()
+
+@tasks.loop(hours=24)
+async def inactivity_checker():
+    try:
+        roster = get_cached("full_roster")
+        if not roster: return
+        for player in roster:
+            try:
+                profile = await kirka_get_profile(player.get('player_id'))
+                if not profile: continue
+                last_seen_str = profile.get('lastSeen')
+                if not last_seen_str: continue
+                if last_seen_str.endswith('Z'): last_seen_str = last_seen_str[:-1] + '+00:00'
+                last_seen_dt = datetime.fromisoformat(last_seen_str)
+                if datetime.now(last_seen_dt.tzinfo) - last_seen_dt > timedelta(days=14):
+                    log.info(f"⚠️ {player['name']} is inactive.")
+            except: pass
+    except: pass
+
+@inactivity_checker.before_loop
+async def before_inactivity():
+    await bot.wait_until_ready()
+    await asyncio.sleep(3600)
 
 # ─────────────────────────────────────────────────────────────
 # API HELPERS
@@ -159,8 +180,7 @@ async def kirka_get_profile(short_id: str):
                     set_cache(cache_key, data)
                     return data
                 return None
-        except Exception:
-            return None
+        except Exception: return None
 
 async def get_roster_player_by_name(name: str):
     url = supabase_endpoint(f"roster?name=ilike.{name}&select=*")
@@ -195,15 +215,14 @@ async def update_player_points(name: str, new_points: float):
 async def roster_autocomplete(interaction: discord.Interaction, current: str):
     roster = get_cached("full_roster") or []
     suggestions = []
-    current_lower = current.lower()
     for player in roster:
         name = player.get("name", "")
-        if current_lower in name.lower():
+        if current.lower() in name.lower():
             suggestions.append(app_commands.Choice(name=name, value=name))
     return suggestions[:25]
 
 # ─────────────────────────────────────────────────────────────
-# UI VIEWS (Fixed Indentation)
+# VIEWS (Fixed Crash)
 # ─────────────────────────────────────────────────────────────
 
 class PaginationView(discord.ui.View):
@@ -222,7 +241,7 @@ class PaginationView(discord.ui.View):
     def create_embed(self):
         desc = (f"### {self.total_label}\n\n" if self.total_label else "") + self.pages[self.current_page]
         embed = discord.Embed(title=self.title, description=desc, color=discord.Color.from_rgb(63, 207, 142))
-        embed.set_footer(text=f"Page {self.current_page + 1} of {len(self.pages)} | Made by vlaims")
+        embed.set_footer(text=f"Page {self.current_page + 1} of {len(self.pages)}")
         return embed
 
     @discord.ui.button(label="<--", style=discord.ButtonStyle.green)
@@ -247,6 +266,10 @@ class ScrimView(discord.ui.View):
         self.map = map_name
         self.score_a = 0
         self.score_b = 0
+        
+        # FIX: Set labels in __init__ to avoid crash
+        self.btn_a.label = f"{clan_a} +1"
+        self.btn_b.label = f"{clan_b} +1"
 
     def get_embed(self):
         embed = discord.Embed(title=f"⚔️ LIVE SCRIM: {self.clan_a} vs {self.clan_b}", color=discord.Color.red())
@@ -255,13 +278,13 @@ class ScrimView(discord.ui.View):
         embed.add_field(name=self.clan_b, value=str(self.score_b), inline=True)
         return embed
 
-    @discord.ui.button(label=f"{clan_a} +1", style=discord.ButtonStyle.blurple)
-    async def add_a(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Loading...", style=discord.ButtonStyle.blurple) # Placeholder
+    async def btn_a(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.score_a += 1
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
-    @discord.ui.button(label=f"{clan_b} +1", style=discord.ButtonStyle.blurple)
-    async def add_b(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Loading...", style=discord.ButtonStyle.blurple) # Placeholder
+    async def btn_b(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.score_b += 1
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
@@ -292,20 +315,14 @@ class PollView(discord.ui.View):
 class ChallengeResultView(discord.ui.View):
     def __init__(self, c_data, o_data, bet, c_mem, o_mem):
         super().__init__(timeout=300)
-        self.c_data = c_data
-        self.o_data = o_data
-        self.bet = bet
-        self.c_mem = c_mem
-        self.o_mem = o_mem
+        self.c_data, self.o_data, self.bet = c_data, o_data, bet
+        self.c_mem, self.o_mem = c_mem, o_mem
         self.resolved = False
 
     async def resolve(self, interaction, winner_mem, loser_mem, w_data, l_data):
-        if self.resolved: 
-            return
+        if self.resolved: return
         self.resolved = True
-        
         payout = round(self.bet * TIER_MULTIPLIER.get(w_data.get("tier", "F").strip(), 1.0), 2)
-        
         w_new = float(w_data.get("points", 0)) + payout
         l_new = max(0, float(l_data.get("points", 0)) - self.bet)
         
@@ -320,51 +337,40 @@ class ChallengeResultView(discord.ui.View):
     @discord.ui.button(label="Challenger Won", style=discord.ButtonStyle.green)
     async def c_win(self, i: discord.Interaction, b: discord.ui.Button):
         if not any(r.name == "leader" for r in i.user.roles):
-            await i.response.send_message("Leaders only.", ephemeral=True)
-            return
+            await i.response.send_message("Leaders only.", ephemeral=True); return
         await self.resolve(i, self.c_mem, self.o_mem, self.c_data, self.o_data)
 
     @discord.ui.button(label="Opponent Won", style=discord.ButtonStyle.blurple)
     async def o_win(self, i: discord.Interaction, b: discord.ui.Button):
         if not any(r.name == "leader" for r in i.user.roles):
-            await i.response.send_message("Leaders only.", ephemeral=True)
-            return
+            await i.response.send_message("Leaders only.", ephemeral=True); return
         await self.resolve(i, self.o_mem, self.c_mem, self.o_data, self.c_data)
 
 class ChallengeAcceptView(discord.ui.View):
     def __init__(self, c_data, o_data, bet, c_mem, o_mem):
         super().__init__(timeout=120)
-        self.c_data = c_data
-        self.o_data = o_data
-        self.bet = bet
-        self.c_mem = c_mem
-        self.o_mem = o_mem
+        self.c_data, self.o_data, self.bet = c_data, o_data, bet
+        self.c_mem, self.o_mem = c_mem, o_mem
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
     async def accept(self, i: discord.Interaction, b: discord.ui.Button):
-        if i.user.id != self.o_mem.id: 
-            return
+        if i.user.id != self.o_mem.id: return
         await i.response.edit_message(view=ChallengeResultView(self.c_data, self.o_data, self.bet, self.c_mem, self.o_mem))
 
 # ─────────────────────────────────────────────────────────────
 # COMMANDS
 # ─────────────────────────────────────────────────────────────
-@bot.tree.command(name="sync", description="Sync commands (Admin Only)")
-@app_commands.default_permissions(administrator=True)
-async def sync(interaction: discord.Interaction):
-    await interaction.response.defer()
-    try:
-        synced = await bot.tree.sync()
-        await interaction.followup.send(f"✅ Synced {len(synced)} commands.")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed: {e}")
+@bot.tree.command(name="sync", description="Sync commands")
+async def sync(i: discord.Interaction):
+    await i.response.defer()
+    synced = await bot.tree.sync()
+    await i.followup.send(f"✅ Synced {len(synced)} commands.")
 
-@bot.tree.command(name="scrim", description="Start a scrim scoreboard")
-@app_commands.describe(opponent="Opponent Clan", map_name="Map being played")
-async def scrim(interaction: discord.Interaction, opponent: str, map_name: str):
-    SCRIM_STATE["active"] = True
+@bot.tree.command(name="scrim", description="Start a scrim")
+@app_commands.describe(opponent="Opponent", map_name="Map")
+async def scrim(i: discord.Interaction, opponent: str, map_name: str):
     view = ScrimView("Kiss", opponent, map_name)
-    await interaction.response.send_message(embed=view.get_embed(), view=view)
+    await i.response.send_message(embed=view.get_embed(), view=view)
 
 @bot.tree.command(name="members", description="View roster")
 async def members(i: discord.Interaction):
@@ -373,11 +379,9 @@ async def members(i: discord.Interaction):
     if not roster:
         async with http_session.get(supabase_endpoint("roster?select=*"), headers=supabase_headers()) as resp:
             roster = await resp.json() if resp.status == 200 else []
-            
     lines = [f"**{p['name']}** | Pts: {p.get('points',0)}" for p in roster]
     pages = ["\n".join(lines[j:j+10]) for j in range(0, len(lines), 10)]
-    
-    view = PaginationView(pages, "Kiss Clan Roster")
+    view = PaginationView(pages, "Roster")
     await i.followup.send(embed=view.create_embed(), view=view)
 
 @bot.tree.command(name="profile", description="Kirka Profile")
@@ -385,33 +389,25 @@ async def members(i: discord.Interaction):
 async def profile(i: discord.Interaction, player_id: str):
     await i.response.defer()
     data = await kirka_get_profile(player_id)
-    if not data: 
-        await i.followup.send("Not found")
-        return
-    
+    if not data: await i.followup.send("Not found"); return
     stats = data.get('stats', {})
     kd = round(stats.get('kills',0)/max(stats.get('deaths',1),1),2)
     embed = discord.Embed(title=data.get('name'), description=f"#{data.get('shortId')}", color=discord.Color.green())
-    embed.add_field(name="KD", value=kd)
-    embed.add_field(name="PRP", value=data.get('klo2V2',0))
+    embed.add_field(name="KD", value=kd); embed.add_field(name="PRP", value=data.get('klo2V2',0))
     await i.followup.send(embed=embed)
 
-@bot.tree.command(name="playercard", description="Generate a profile image")
+@bot.tree.command(name="playercard", description="Generate Image")
 @app_commands.autocomplete(name=roster_autocomplete)
-async def playercard(interaction: discord.Interaction, name: str):
-    await interaction.response.defer()
-    
+async def playercard(i: discord.Interaction, name: str):
+    await i.response.defer()
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
-        await interaction.followup.send("❌ Pillow library not installed.", ephemeral=True)
-        return
+        await i.followup.send("❌ Pillow missing.", ephemeral=True); return
         
     player = await get_roster_player_by_name(name)
-    if not player:
-        await interaction.followup.send("Player not found", ephemeral=True)
-        return
-        
+    if not player: await i.followup.send("Not found", ephemeral=True); return
+    
     profile = await kirka_get_profile(player['player_id'])
     width, height = 500, 250
     img = Image.new('RGB', (width, height), color=(20, 20, 25))
@@ -420,7 +416,6 @@ async def playercard(interaction: discord.Interaction, name: str):
         font = ImageFont.truetype("arial.ttf", 30)
     except:
         font = ImageFont.load_default()
-
     d.rectangle([(10,10), (490, 240)], outline=(63, 207, 142), width=3)
     d.text((30, 30), f"NAME: {player['name'].upper()}", fill=(255, 255, 255), font=font)
     
@@ -428,53 +423,24 @@ async def playercard(interaction: discord.Interaction, name: str):
     img.save(buffer, format="PNG")
     buffer.seek(0)
     file = discord.File(buffer, filename="card.png")
-    await interaction.followup.send(file=file)
+    await i.followup.send(file=file)
 
 @bot.tree.command(name="challenge", description="Challenge a player")
-@app_commands.describe(opponent="The opponent", bet="Points to bet")
+@app_commands.describe(opponent="Opponent", bet="Points")
 async def challenge(i: discord.Interaction, opponent: discord.Member, bet: float):
     await i.response.defer()
-    if bet <= 0: 
-        await i.followup.send("Invalid bet", ephemeral=True)
-        return
-    
+    if bet <= 0: await i.followup.send("Invalid bet", ephemeral=True); return
     c_data = await get_roster_player_by_discord(i.user.name)
     o_data = await get_roster_player_by_discord(opponent.name)
-    
-    if not c_data or not o_data: 
-        await i.followup.send("Roster lookup failed.", ephemeral=True)
-        return
+    if not c_data or not o_data: await i.followup.send("Roster lookup failed.", ephemeral=True); return
     if float(c_data.get('points',0)) < bet or float(o_data.get('points',0)) < bet:
-        await i.followup.send("Someone is too broke.", ephemeral=True)
-        return
-
+        await i.followup.send("Too broke.", ephemeral=True); return
     view = ChallengeAcceptView(c_data, o_data, bet, i.user, opponent)
-    await i.followup.send(f"⚔️ {i.user.mention} vs {opponent.mention} for `{bet}` pts", view=view)
+    await i.followup.send(f"⚔️ {i.user.mention} vs {opponent.mention} for `{bet}`", view=view)
 
-# ─────────────────────────────────────────────────────────────
-# EVENTS
-# ─────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
     log.info(f"🚀 Logged in as {bot.user}")
 
-@bot.event
-async def on_connect():
-    log.info("📡 Connected to Discord Gateway")
-
-@bot.tree.error
-async def on_command_error(i: discord.Interaction, e):
-    log.error(f"Command Error: {e}")
-    if i.response.is_done():
-        if not i.is_done(): 
-            await i.followup.send(f"Error: {e}", ephemeral=True)
-    else:
-        await i.response.send_message(f"Error: {e}", ephemeral=True)
-
 if __name__ == "__main__":
-    try:
-        bot.run(os.environ.get('DISCORD_TOKEN'))
-    except KeyboardInterrupt:
-        log.info("Shutting down...")
-    except Exception as e:
-        log.critical(f"Fatal Error: {e}")
+    bot.run(os.environ.get('DISCORD_TOKEN'))
