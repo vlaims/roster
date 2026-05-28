@@ -272,7 +272,7 @@ async def register(interaction: discord.Interaction, name: str, player_id: str):
         return
     await interaction.response.defer(ephemeral=True)
     logs_channel = discord.utils.get(interaction.guild.text_channels, name="application-logs")
-    admin_role   = discord.utils.get(interaction.guild.roles, name="leader" , "co leader" , "officer")
+    admin_role   = discord.utils.get(interaction.guild.roles, name="leader")
     if not logs_channel:
         await interaction.followup.send("Logs channel not found.", ephemeral=True)
         return
