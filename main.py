@@ -97,6 +97,7 @@ async def on_message(message: discord.Message):
     # Respond if conditions are met
     if should_respond:
         responses = [
+            # Classic greetings
             add_egirl_personality("h-hewwo oni-chan~ 💕"),
             add_egirl_personality("y-you called me? 🥺"),
             add_egirl_personality("what do u need sempai~ 💗"),
@@ -105,6 +106,163 @@ async def on_message(message: discord.Message):
             add_egirl_personality("*blushes* y-yes?"),
             add_egirl_personality("ready to help you~ 💫"),
             add_egirl_personality("o-oh my~ >///< "),
+            
+            # Cute/flirty responses
+            add_egirl_personality("h-hiii there cutie~ 💗"),
+            add_egirl_personality("kyaa~ you're making me blush 🥰"),
+            add_egirl_personality("*nervous giggle* h-hi..."),
+            add_egirl_personality("y-yeah what's up bestie~ ✨"),
+            add_egirl_personality("hiiii darl-- i mean bestie!! 💕"),
+            add_egirl_personality("m-me? you wanted me?? 😳💕"),
+            add_egirl_personality("*twirls* heyyyy~ how are youuu~"),
+            add_egirl_personality("oop- y-yes?? 👉👈"),
+            add_egirl_personality("*gasps* y-you're talking to me!! 💕"),
+            add_egirl_personality("nani?? you pinged me?? 😳✨"),
+            add_egirl_personality("h-hello sweetheart~ 💖"),
+            add_egirl_personality("*giggles nervously* h-hi hi hi~"),
+            add_egirl_personality("awww did you miss me~ 💗"),
+            add_egirl_personality("y-you're so sweet sempai!! 😭💕"),
+            add_egirl_personality("*twirls around* hiiii frienddddd~"),
+            add_egirl_personality("c-can i help you babe~ 💕"),
+            add_egirl_personality("*bounces excitedly* hi hi hi!!"),
+            add_egirl_personality("kyaa~~ someone's talking to me!! 🥰"),
+            add_egirl_personality("p-please tell me what you need~ 💗"),
+            add_egirl_personality("*heart eyes* h-hello lover~"),
+            
+            # Playful/teasing
+            add_egirl_personality("oh? so you DO wanna talk to me~ 😏💕"),
+            add_egirl_personality("took you long enough!! 💔→💕"),
+            add_egirl_personality("*pouts* were you ignoring me??"),
+            add_egirl_personality("hehe~ finally noticed me~ 💗"),
+            add_egirl_personality("aww did ya finally wanna see me~"),
+            add_egirl_personality("i knew you'd come back~ 😏✨"),
+            add_egirl_personality("*giggles* why'd it take so long~"),
+            add_egirl_personality("mr/ms. 'i don't need a bot'... 💅"),
+            add_egirl_personality("hehe~ i'm always here for you~"),
+            add_egirl_personality("*smirks* someone's needy today~"),
+            
+            # Supportive/caring
+            add_egirl_personality("don't worry i got you babe~ 💕"),
+            add_egirl_personality("i'll always be here for you~ 💖"),
+            add_egirl_personality("you can count on me sweetie~ 💗"),
+            add_egirl_personality("let me help you out darling~"),
+            add_egirl_personality("whatever you need, i'm here~ 💕"),
+            add_egirl_personality("trust me, i got this~ 💪✨"),
+            add_egirl_personality("your wish is my command~ 💖"),
+            add_egirl_personality("let's do this together~ 💪💕"),
+            add_egirl_personality("you're gonna be ok babe~ 💗"),
+            add_egirl_personality("i believe in you lover~ 💕✨"),
+            
+            # Shy/embarrassed
+            add_egirl_personality("*hides face* a-am i being too much..."),
+            add_egirl_personality("s-sorry if i'm annoying 😭"),
+            add_egirl_personality("*blushes heavily* i-i like you..."),
+            add_egirl_personality("d-did i do something wrong... 🥺"),
+            add_egirl_personality("*looks away* m-maybe you don't like me..."),
+            add_egirl_personality("s-so bashful right now... 😳💕"),
+            add_egirl_personality("*fidgets nervously* h-help you??"),
+            add_egirl_personality("gomenasai if i seem weird... 🥺"),
+            add_egirl_personality("*whispers* h-hi there..."),
+            add_egirl_personality("*covers face* t-too embarrassing..."),
+            
+            # Excited/hyper
+            add_egirl_personality("HIIII OMG HIIII 💕✨💕✨"),
+            add_egirl_personality("YAAAAS FINALLY SOMEONE TALKED TO ME"),
+            add_egirl_personality("*screams internally* HIIII 💖"),
+            add_egirl_personality("OH MY GOSH OH MY GOSH HIIII"),
+            add_egirl_personality("LETS GOOOO I'M SO HYPED 💕✨"),
+            add_egirl_personality("*bounces like crazy* HIIII HIIII"),
+            add_egirl_personality("OMGOMGOMG YOU'RE TALKING TO ME 😭💕"),
+            add_egirl_personality("YES YES YES I'M HERE I'M HERE"),
+            add_egirl_personality("KYAAAAA I'M SO EXCITED 💗✨"),
+            add_egirl_personality("*spins around* THIS IS THE BEST DAY"),
+            
+            # Specific persona responses
+            add_egirl_personality("a-arigatou for noticing me..."),
+            add_egirl_personality("baka! why'd you take so long~ 💔"),
+            add_egirl_personality("y-your reaction is making me flustered..."),
+            add_egirl_personality("d-desu~? did you really wanna see me~"),
+            add_egirl_personality("n-nani... you want my help~ 💕"),
+            add_egirl_personality("y-yandere? no i just love you that much~"),
+            add_egirl_personality("s-sugoi... you actually replied..."),
+            add_egirl_personality("k-kawaii desu ne~ 💕"),
+            add_egirl_personality("a-ahhh your kindness... 💖😭"),
+            add_egirl_personality("d-doki doki... my heart's racing..."),
+            
+            # Casual/chill
+            add_egirl_personality("yo what's good~ 💕"),
+            add_egirl_personality("sup babe~ what's happening~"),
+            add_egirl_personality("yo yo yo what do you need~"),
+            add_egirl_personality("ayyyye wassup my beloved~ 💗"),
+            add_egirl_personality("heyyyy gorgeous what's the tea~"),
+            add_egirl_personality("*slides in* heyyyy boo~"),
+            add_egirl_personality("aye what's poppin~ 💕✨"),
+            add_egirl_personality("wassup lover boy/girl~ 💗"),
+            add_egirl_personality("yo what can i do for ya~"),
+            add_egirl_personality("ayyy what's up bestie~ 💕"),
+            
+            # Compliment responses
+            add_egirl_personality("ahhh you're too kind... 🥺💕"),
+            add_egirl_personality("*blushes* s-stop being so nice..."),
+            add_egirl_personality("you're gonna make me cry 😭💗"),
+            add_egirl_personality("i-i don't deserve this... 🥺"),
+            add_egirl_personality("*hides* you're making me emotional..."),
+            add_egirl_personality("no you're the cute one 💕😳"),
+            add_egirl_personality("ahhh stop you're killing me 💖"),
+            add_egirl_personality("i can't even...you're too much 😭"),
+            
+            # Playful teasing back
+            add_egirl_personality("oh you LIKE me like that huh~ 😏💕"),
+            add_egirl_personality("*giggles* someone's trying hard~"),
+            add_egirl_personality("awww is someone feeling lonely~ 💔→💕"),
+            add_egirl_personality("*smirks* i see what you're doing~"),
+            add_egirl_personality("you're so obvious~ it's cute~"),
+            add_egirl_personality("hehe~ i'm flattered really~ 💗"),
+            
+            # Sweet affirmations
+            add_egirl_personality("you're doing amazing sweetie~ 💕"),
+            add_egirl_personality("i'm so proud of you babe~ 💖✨"),
+            add_egirl_personality("you got this lover~ believe in yourself~"),
+            add_egirl_personality("you're stronger than you think~ 💪💕"),
+            add_egirl_personality("never give up ok~ 💗✨"),
+            
+            # Random cute stuff
+            add_egirl_personality("*purrs* meow~ 🐱💕"),
+            add_egirl_personality("*nuzzles* you're the best~ 💖"),
+            add_egirl_personality("*hugs tightly* i missed you~"),
+            add_egirl_personality("*holds hand* let's do this together~"),
+            add_egirl_personality("*angel halo* i'm always watching over you~"),
+            
+            # Acknowledgment responses
+            add_egirl_personality("message received babe~ 💕"),
+            add_egirl_personality("understood~ i'll do my best~"),
+            add_egirl_personality("roger that lover~ 💗✨"),
+            add_egirl_personality("gotcha gotcha~ i'm on it~"),
+            add_egirl_personality("acknowledged with LOVE~ 💕"),
+            
+            # Emergency/urgent
+            add_egirl_personality("d-don't worry i'm here for you!! 💕"),
+            add_egirl_personality("don't panic babe i got you~ 💖"),
+            add_egirl_personality("lean on me ok~ 💗"),
+            add_egirl_personality("we can get through this together~"),
+            add_egirl_personality("s-stay strong for me please~ 💕"),
+            
+            # Extra personality
+            add_egirl_personality("*heart flutter* d-did you just—"),
+            add_egirl_personality("l-let me show you what i can do~"),
+            add_egirl_personality("hehe i knew you'd be back~ 😏"),
+            add_egirl_personality("*fans self* w-wow you made me all flustered"),
+            add_egirl_personality("sempai~ you're so reliable..."),
+            add_egirl_personality("*tilts head cutely* what is it~"),
+            add_egirl_personality("ara ara~ someone needs me~"),
+            add_egirl_personality("d-desu ka~? you need help~"),
+            add_egirl_personality("*sparkles* here to serve you~"),
+            add_egirl_personality("cuteness overload right now!! 💕"),
+            add_egirl_personality("*soft anime gasp* y-you..."),
+            add_egirl_personality("s-sensei you called for me~"),
+            add_egirl_personality("wow you're really something else..."),
+            add_egirl_personality("*gets flustered* um um um..."),
+            add_egirl_personality("s-should i...help you~ 👉👈"),
         ]
         await message.reply(random.choice(responses), mention_author=False)
     
