@@ -1,4 +1,4 @@
 discord.py
 aiohttp
 beautifulsoup4
-pip install Pillow
+Pillow
