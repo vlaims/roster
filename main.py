@@ -24,8 +24,8 @@ LOGS_CHANNEL_ID = int(os.environ.get('LOGS_CHANNEL_ID', 0))
 TIER_ORDER      = ["S", "A+", "A", "B", "C", "F"]
 TIER_MULTIPLIER = {"S": 3.0, "A+": 2.5, "A": 2.0, "B": 1.5, "C": 1.0, "F": 0.5}
 XP_RATE         = 10 
-LEVEL_UP_XP     = 1000 
-DAILY_REWARD    = 500
+LEVEL_UP_XP     = 1000
+DAILY_REWARD    = 50
 WEEKLY_RESET_DAY = 0 
 
 ACTIVE_EVENTS = {}
@@ -360,9 +360,9 @@ async def coinflip(i: discord.Interaction, amount: int, choice: str):
 async def shop(i: discord.Interaction):
     await i.response.defer()
     embed = discord.Embed(title="🛒 Clan Shop", description="Spend your points here!", color=discord.Color.purple())
-    embed.add_field(name="Role: Booster", value="500 pts", inline=False)
-    embed.add_field(name="Role: Nitro", value="1000 pts", inline=False)
-    embed.add_field(name="Custom Color", value="2000 pts", inline=False)
+    embed.add_field(name="Point multiplier (2x for 1 day)", value="5000 pts", inline=False)
+    embed.add_field(name="Custom role ", value="10000 pts", inline=False)
+    embed.add_field(name="Kirka skin > 100m *from castiels inventroy*", value="20000 pts", inline=False)
     await i.followup.send(embed=embed)
 
 @bot.tree.command(name="challenge", description="Challenge a player to a ranked match")
