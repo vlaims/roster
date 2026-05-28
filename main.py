@@ -1,77 +1,68 @@
 import os
 import sys
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import aiohttp
-import asyncio
 import time
 import random
 import logging
-from datetime import datetime, timedelta
-from functools import wraps
 import io
+from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────────────────────
-# LOGGING SETUP (For Railway Debugging)
+# LOGGING SETUP
 # ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    stream=sys.stdout, 
+    force=True
 )
 log = logging.getLogger("RailwayBot")
 
 # ─────────────────────────────────────────────────────────────
-# CONFIG & CONSTANTS
+# ENVIRONMENT CHECKS
 # ─────────────────────────────────────────────────────────────
-KIRKA_API_KEY  = os.environ.get('KIRKA_API_KEY')
-KIRKA_BASE_URL = "https://api.kirka.io"
 DISCORD_TOKEN  = os.environ.get('DISCORD_TOKEN')
 SUPABASE_URL   = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY   = os.environ.get('SUPABASE_KEY')
+KIRKA_API_KEY  = os.environ.get('KIRKA_API_KEY')
 
-# Fail fast if critical env vars are missing
-if not all([KIRKA_API_KEY, DISCORD_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
-    log.critical("❌ CRITICAL: Missing Environment Variables (KIRKA_API_KEY, DISCORD_TOKEN, SUPABASE_URL, SUPABASE_KEY).")
+log.info("Checking Environment Variables...")
+if not DISCORD_TOKEN:
+    log.critical("❌ CRASH: DISCORD_TOKEN is missing.")
+    sys.exit(1)
+if not SUPABASE_URL:
+    log.critical("❌ CRASH: SUPABASE_URL is missing.")
+    sys.exit(1)
+if not SUPABASE_KEY:
+    log.critical("❌ CRASH: SUPABASE_KEY is missing.")
+    sys.exit(1)
+if not KIRKA_API_KEY:
+    log.critical("❌ CRASH: KIRKA_API_KEY is missing.")
     sys.exit(1)
 
-API_CACHE      = {}
-CACHE_DURATION = 60  # seconds
-API_SEMAPHORE = asyncio.Semaphore(5) # Queue system for API requests
+log.info("✅ All Environment Variables found.")
 
-# Tier Logic
+# ─────────────────────────────────────────────────────────────
+# CONFIG & CONSTANTS
+# ─────────────────────────────────────────────────────────────
+KIRKA_BASE_URL = "https://api.kirka.io"
+API_CACHE      = {}
+CACHE_DURATION = 60
+API_SEMAPHORE = asyncio.Semaphore(5)
+
 TIER_ORDER      = ["S", "A+", "A", "B", "C", "F"]
 TIER_MULTIPLIER = {"S": 3.0, "A+": 2.5, "A": 2.0, "B": 1.5, "C": 1.0, "F": 0.5}
 
-# Shop Items
-SHOP_ITEMS = {
-    "booster": {"id": "booster", "name": "XP Booster", "price": 500, "desc": "A temporary role for attention."},
-    "custom_color": {"id": "custom_color", "name": "Custom Color", "price": 1000, "desc": "Get a custom colored role."},
-    "nitro": {"id": "nitro", "name": "Fake Nitro", "price": 5000, "desc": "A cool role named 'Nitro'"},
-    "premium": {"id": "premium", "name": "Premium Status", "price": 10000, "desc": "Top tier role in the server."},
-}
-
-# Global States
-SCRIM_STATE = {
-    "active": False,
-    "channel_id": None,
-    "message_id": None,
-    "team_a": "Team A",
-    "team_b": "Team B",
-    "score_a": 0,
-    "score_b": 0
-}
-
+SCRIM_STATE = {"active": False, "score_a": 0, "score_b": 0}
 http_session = None
 
 # ─────────────────────────────────────────────────────────────
-# UTILITIES & HELPERS
+# UTILITIES
 # ─────────────────────────────────────────────────────────────
-def tier_rank(tier: str) -> int:
-    try: return TIER_ORDER.index(tier.strip())
-    except ValueError: return 999
-
 def kirka_headers():
     return {"ApiKey": KIRKA_API_KEY, "Accept": "application/json", "Content-Type": "application/json"}
 
@@ -102,22 +93,6 @@ def make_embed(title, description="", color=discord.Color.from_rgb(63, 207, 142)
     embed.set_footer(text="Made by vlaims • api.kirka.io")
     return embed
 
-def cooldown(seconds: int):
-    cooldowns = {}
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(interaction: discord.Interaction, *args, **kwargs):
-            user_id = interaction.user.id
-            now = time.time()
-            if user_id in cooldowns:
-                if cooldowns[user_id] > now:
-                    await interaction.response.send_message(f"⏳ Slow down. Try again in `{cooldowns[user_id] - now:.1f}s`", ephemeral=True)
-                    return
-            cooldowns[user_id] = now + seconds
-            return await func(interaction, *args, **kwargs)
-        return wrapper
-    return decorator
-
 # ─────────────────────────────────────────────────────────────
 # BOT SETUP
 # ─────────────────────────────────────────────────────────────
@@ -126,36 +101,20 @@ class MyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = True 
-        intents.presences = True
         super().__init__(command_prefix="!", intents=intents, help_command=None)
 
     async def setup_hook(self):
         global http_session
+        log.info("Initializing HTTP Session...")
         http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
-        
-        # Start Background Tasks
         self.background_cache.start()
-        self.inactivity_checker.start()
-        
-        # Command Syncing (Try Guild, fallback to Global)
-        try:
-            guild_id = os.environ.get('GUILD_ID')
-            if guild_id:
-                guild = discord.Object(id=int(guild_id))
-                self.tree.copy_global_to(guild=guild)
-                await self.tree.sync(guild=guild)
-                log.info(f"✅ Synced commands to Guild {guild_id}")
-            else:
-                await self.tree.sync()
-                log.info("✅ Synced commands globally")
-        except Exception as e:
-            log.error(f"❌ Command sync failed: {e}")
+        log.info("✅ Bot setup complete.")
 
     async def close(self):
         self.background_cache.cancel()
-        self.inactivity_checker.cancel()
         global http_session
-        if http_session: await http_session.close()
+        if http_session: 
+            await http_session.close()
         await super().close()
 
 bot = MyBot()
@@ -165,62 +124,21 @@ bot = MyBot()
 # ─────────────────────────────────────────────────────────────
 @tasks.loop(minutes=10)
 async def background_cache():
-    """Refreshes the roster cache to ensure instant autocomplete."""
     try:
+        if not http_session: return
         async with http_session.get(supabase_endpoint("roster?select=*"), headers=supabase_headers()) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 set_cache("full_roster", data)
-                log.debug(f"🔄 Cache updated: {len(data)} players")
     except Exception as e:
-        log.error(f"Cache refresh failed: {e}")
+        log.error(f"Cache error: {e}")
 
 @background_cache.before_loop
 async def before_cache():
     await bot.wait_until_ready()
 
-@tasks.loop(hours=24)
-async def inactivity_checker():
-    """Checks roster for inactive players based on Kirka API last_seen."""
-    log.info("🔍 Starting inactivity check...")
-    roster = get_cached("full_roster")
-    if not roster: return
-
-    inactive_role_name = "Inactive"
-    
-    for player in roster:
-        try:
-            profile = await kirka_get_profile(player.get('player_id'))
-            if not profile: continue
-            
-            last_seen_str = profile.get('lastSeen')
-            if not last_seen_str: continue
-
-            # Parse ISO date (Kirka returns "2023-10-27T10:00:00.000Z")
-            try:
-                # Handle Zulu time
-                if last_seen_str.endswith('Z'):
-                    last_seen_str = last_seen_str[:-1] + '+00:00'
-                last_seen_dt = datetime.fromisoformat(last_seen_str)
-                
-                # Check if 14 days inactive
-                if datetime.now(last_seen_dt.tzinfo) - last_seen_dt > timedelta(days=14):
-                    log.info(f"⚠️ {player['name']} is inactive.")
-                    # Logic to assign role here would require fetching Member object
-                    # which is expensive. Logging for now.
-            except ValueError:
-                continue
-                
-        except Exception as e:
-            log.error(f"Error checking inactivity for {player.get('name')}: {e}")
-
-@inactivity_checker.before_loop
-async def before_inactivity():
-    await bot.wait_until_ready()
-    await asyncio.sleep(3600) # Wait 1 hour after start before first check
-
 # ─────────────────────────────────────────────────────────────
-# API & DB HELPERS
+# API HELPERS
 # ─────────────────────────────────────────────────────────────
 async def kirka_get_profile(short_id: str):
     clean_id = short_id.replace('#', '').strip().upper()
@@ -230,6 +148,7 @@ async def kirka_get_profile(short_id: str):
     
     async with API_SEMAPHORE:
         try:
+            if not http_session: return None
             async with http_session.post(
                 f"{KIRKA_BASE_URL}/api/user/getProfile",
                 headers=kirka_headers(),
@@ -240,13 +159,13 @@ async def kirka_get_profile(short_id: str):
                     set_cache(cache_key, data)
                     return data
                 return None
-        except Exception as e:
-            log.error(f"Kirka API Error for {clean_id}: {e}")
+        except Exception:
             return None
 
 async def get_roster_player_by_name(name: str):
     url = supabase_endpoint(f"roster?name=ilike.{name}&select=*")
     try:
+        if not http_session: return None
         async with http_session.get(url, headers=supabase_headers()) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -257,6 +176,7 @@ async def get_roster_player_by_name(name: str):
 async def get_roster_player_by_discord(discord_name: str):
     url = supabase_endpoint(f"roster?discord_handle=eq.{discord_name}&select=*")
     try:
+        if not http_session: return None
         async with http_session.get(url, headers=supabase_headers()) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -264,41 +184,18 @@ async def get_roster_player_by_discord(discord_name: str):
             return None
     except Exception: return None
 
-async def update_player_elo(name: str, new_elo: int):
-    url = supabase_endpoint(f"roster?name=eq.{name}")
-    try:
-        async with http_session.patch(url, headers=supabase_headers(), json={"elo": new_elo}) as resp:
-            return resp.status in [200, 204]
-    except Exception: return False
-
 async def update_player_points(name: str, new_points: float):
     url = supabase_endpoint(f"roster?name=eq.{name}")
     try:
+        if not http_session: return False
         async with http_session.patch(url, headers=supabase_headers(), json={"points": round(new_points, 2)}) as resp:
             return resp.status in [200, 204]
     except Exception: return False
-
-async def log_match_to_db(winner, loser, w_score, l_score, w_change, l_change):
-    payload = {
-        "winner": winner,
-        "loser": loser,
-        "winner_score": w_score,
-        "loser_score": l_score,
-        "winner_elo_change": w_change,
-        "loser_elo_change": l_change
-    }
-    try:
-        async with http_session.post(supabase_endpoint("matches"), headers=supabase_headers(), json=payload) as resp:
-            if resp.status not in [200, 201]:
-                log.error(f"Failed to log match: {resp.status}")
-    except Exception as e:
-        log.error(f"Match logging error: {e}")
 
 async def roster_autocomplete(interaction: discord.Interaction, current: str):
     roster = get_cached("full_roster") or []
     suggestions = []
     current_lower = current.lower()
-    # Safe iteration
     for player in roster:
         name = player.get("name", "")
         if current_lower in name.lower():
@@ -306,8 +203,9 @@ async def roster_autocomplete(interaction: discord.Interaction, current: str):
     return suggestions[:25]
 
 # ─────────────────────────────────────────────────────────────
-# UI VIEWS
+# UI VIEWS (Fixed Indentation)
 # ─────────────────────────────────────────────────────────────
+
 class PaginationView(discord.ui.View):
     def __init__(self, pages: list, title: str, total_label: str = ""):
         super().__init__(timeout=180)
@@ -351,10 +249,7 @@ class ScrimView(discord.ui.View):
         self.score_b = 0
 
     def get_embed(self):
-        embed = discord.Embed(
-            title=f"⚔️ LIVE SCRIM: {self.clan_a} vs {self.clan_b}",
-            color=discord.Color.red()
-        )
+        embed = discord.Embed(title=f"⚔️ LIVE SCRIM: {self.clan_a} vs {self.clan_b}", color=discord.Color.red())
         embed.add_field(name="Map", value=self.map, inline=False)
         embed.add_field(name=self.clan_a, value=str(self.score_a), inline=True)
         embed.add_field(name=self.clan_b, value=str(self.score_b), inline=True)
@@ -394,225 +289,19 @@ class PollView(discord.ui.View):
     async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update(interaction, "No")
 
-# ─────────────────────────────────────────────────────────────
-# COMMANDS: COMPETITIVE
-# ─────────────────────────────────────────────────────────────
-@bot.tree.command(name="scrim", description="Start a scrim scoreboard")
-@app_commands.describe(opponent="Opponent Clan", map_name="Map being played")
-async def scrim(interaction: discord.Interaction, opponent: str, map_name: str):
-    if SCRIM_STATE["active"]:
-        await interaction.response.send_message("A scrim is already active in another channel!", ephemeral=True)
-        return
-    
-    SCRIM_STATE["active"] = True
-    view = ScrimView("Kiss", opponent, map_name)
-    await interaction.response.send_message(embed=view.get_embed(), view=view)
-
-@bot.tree.command(name="elo", description="Calculate and record ELO changes")
-@app_commands.describe(winner="Winner Name", loser="Loser Name", k_factor="K-Factor (Default 32)")
-@app_commands.autocomplete(winner=roster_autocomplete, loser=roster_autocomplete)
-async def elo_cmd(interaction: discord.Interaction, winner: str, loser: str, k_factor: int = 32):
-    await interaction.response.defer()
-    
-    # Fetch current ELO (Default 1200 if missing)
-    w_data = await get_roster_player_by_name(winner)
-    l_data = await get_roster_player_by_name(loser)
-    
-    if not w_data or not l_data:
-        await interaction.followup.send("One or both players not found in roster.", ephemeral=True)
-        return
-
-    w_elo = w_data.get('elo', 1200)
-    l_elo = l_data.get('elo', 1200)
-    
-    # ELO Math
-    expected_win = 1 / (1 + 10 ** ((l_elo - w_elo) / 400))
-    expected_los = 1 / (1 + 10 ** ((w_elo - l_elo) / 400))
-    
-    new_w_elo = round(w_elo + k_factor * (1 - expected_win))
-    new_l_elo = round(l_elo + k_factor * (0 - expected_los))
-    
-    w_change = new_w_elo - w_elo
-    l_change = new_l_elo - l_elo
-    
-    # Update DB
-    await update_player_elo(winner, new_w_elo)
-    await update_player_elo(loser, new_l_elo)
-    
-    # Log Match
-    await log_match_to_db(winner, loser, 1, 0, w_change, l_change)
-    
-    embed = make_embed("📊 ELO Update")
-    embed.add_field(name=f"🏆 {winner}", value=f"`{w_elo}` ➡ `{new_w_elo}` ({w_change:+})", inline=False)
-    embed.add_field(name=f"💀 {loser}", value=f"`{l_elo}` ➡ `{new_l_elo}` ({l_change:+})", inline=False)
-    
-    await interaction.followup.send(embed=embed)
-
-@bot.tree.command(name="topheadshots", description="Show top headshots in clan")
-async def topheadshots(interaction: discord.Interaction):
-    await interaction.response.defer()
-    roster = get_cached("full_roster") or []
-    
-    results = []
-    # Process first 15 to avoid timeout
-    for p in roster[:15]:
-        try:
-            profile = await kirka_get_profile(p['player_id'])
-            if profile:
-                hs = profile.get('stats', {}).get('headshots', 0)
-                results.append((p['name'], hs))
-        except:
-            continue
-            
-    results.sort(key=lambda x: x[1], reverse=True)
-    desc = "\n".join([f"**{i+1}.** {to_fancy_font(n)} — `{hs:,}`" for i, (n, hs) in enumerate(results[:5])])
-    await interaction.followup.send(embed=make_embed("🎯 Top Headshots", desc))
-
-# ─────────────────────────────────────────────────────────────
-# COMMANDS: ANALYTICS & SMART
-# ─────────────────────────────────────────────────────────────
-@bot.tree.command(name="analytics", description="View clan statistics")
-async def analytics(interaction: discord.Interaction):
-    await interaction.response.defer()
-    roster = get_cached("full_roster") or []
-    
-    total_pts = sum([float(p.get('points', 0)) for p in roster])
-    avg_pts = total_pts / len(roster) if roster else 0
-    
-    # KD Calculation (Sample first 10 for speed)
-    kds = []
-    for p in roster[:10]:
-        try:
-            prof = await kirka_get_profile(p['player_id'])
-            if prof:
-                s = prof.get('stats', {})
-                k = s.get('kills', 0)
-                d = s.get('deaths', 1)
-                if d > 0: kds.append(k/d)
-        except: pass
-        
-    avg_kd = sum(kds)/len(kds) if kds else 0
-    
-    embed = make_embed("📊 Clan Analytics")
-    embed.add_field(name="Total Members", value=len(roster), inline=True)
-    embed.add_field(name="Total Points", value=f"{total_pts:,.0f}", inline=True)
-    embed.add_field(name="Avg KD (Top 10)", value=f"{avg_kd:.2f}", inline=True)
-    await interaction.followup.send(embed=embed)
-
-@bot.tree.command(name="playercard", description="Generate a profile image")
-@app_commands.autocomplete(name=roster_autocomplete)
-async def playercard(interaction: discord.Interaction, name: str):
-    await interaction.response.defer()
-    player = await get_roster_player_by_name(name)
-    if not player:
-        await interaction.followup.send("Player not found", ephemeral=True)
-        return
-        
-    profile = await kirka_get_profile(player['player_id'])
-    
-    # Check if PIL is available
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-    except ImportError:
-        await interaction.followup.send("❌ Pillow library is not installed. Cannot generate image.", ephemeral=True)
-        return
-
-    # Generate Image
-    width, height = 500, 250
-    img = Image.new('RGB', (width, height), color=(20, 20, 25))
-    d = ImageDraw.Draw(img)
-    
-    # Fonts
-    try:
-        # Try to load a font, fallback to default
-        font_title = ImageFont.truetype("arial.ttf", 30)
-        font_body = ImageFont.truetype("arial.ttf", 20)
-    except:
-        font_title = ImageFont.load_default()
-        font_body = ImageFont.load_default()
-
-    # Draw Border
-    d.rectangle([(10,10), (490, 240)], outline=(63, 207, 142), width=3)
-    
-    # Draw Text
-    d.text((30, 30), f"NAME: {player['name'].upper()}", fill=(255, 255, 255), font=font_title)
-    
-    if profile:
-        stats = profile.get('stats', {})
-        kills = stats.get('kills', 0)
-        deaths = stats.get('deaths', 1)
-        kd = round(kills / deaths, 2) if deaths > 0 else 0
-        prp = profile.get('klo2V2', 0)
-        
-        d.text((30, 80), f"KD: {kd}", fill=(100, 255, 100), font=font_body)
-        d.text((30, 110), f"WINS: {stats.get('wins', 0)}", fill=(100, 200, 255), font=font_body)
-        d.text((30, 140), f"PRP: {prp}", fill=(255, 215, 0), font=font_body)
-        
-    # Save
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    buffer.seek(0)
-    file = discord.File(buffer, filename="card.png")
-    
-    await interaction.followup.send(file=file)
-
-# ─────────────────────────────────────────────────────────────
-# COMMANDS: FUN & GAMBLING
-# ─────────────────────────────────────────────────────────────
-@bot.tree.command(name="gamble", description="Gamble your points")
-@app_commands.describe(amount="Amount to bet")
-async def gamble(interaction: discord.Interaction, amount: float):
-    await interaction.response.defer()
-    player = await get_roster_player_by_discord(interaction.user.name)
-    if not player:
-        await interaction.followup.send("You are not on the roster.", ephemeral=True)
-        return
-        
-    current = float(player.get('points', 0))
-    if amount > current:
-        await interaction.followup.send(f"You only have `{current}` points!", ephemeral=True)
-        return
-        
-    roll = random.randint(1, 100)
-    if roll > 50: # Win
-        new = current + amount
-        await update_player_points(player['name'], new)
-        await interaction.followup.send(f"🎉 Rolled {roll}! You won `{amount}` pts! New Balance: `{new}`")
-    else: # Lose
-        new = current - amount
-        await update_player_points(player['name'], new)
-        await interaction.followup.send(f"💀 Rolled {roll}. You lost `{amount}` pts. New Balance: `{new}`")
-
-@bot.tree.command(name="poll", description="Create a quick poll")
-@app_commands.describe(question="The question")
-async def poll(interaction: discord.Interaction, question: str):
-    view = PollView(question)
-    await interaction.response.send_message(f"**{question}**", view=view)
-
-@bot.tree.command(name="expose", description="Expose a member")
-@app_commands.describe(member="The member")
-async def expose(interaction: discord.Interaction, member: discord.Member):
-    roasts = [
-        "Grass touched: 0 times",
-        "Showers: Monthly",
-        "Skill Issue: Critical",
-        "Social Battery: 1%",
-        "Sunlight: Allergic"
-    ]
-    await interaction.response.send_message(f"🔍 **Exposing {member.display_name}...**\n❗ {random.choice(roasts)}")
-
-# ─────────────────────────────────────────────────────────────
-# COMMANDS: ORIGINAL (Preserved & Safe)
-# ─────────────────────────────────────────────────────────────
 class ChallengeResultView(discord.ui.View):
     def __init__(self, c_data, o_data, bet, c_mem, o_mem):
         super().__init__(timeout=300)
-        self.c_data, self.o_data, self.bet = c_data, o_data, bet
-        self.c_mem, self.o_mem = c_mem, o_mem
+        self.c_data = c_data
+        self.o_data = o_data
+        self.bet = bet
+        self.c_mem = c_mem
+        self.o_mem = o_mem
         self.resolved = False
 
     async def resolve(self, interaction, winner_mem, loser_mem, w_data, l_data):
-        if self.resolved: return
+        if self.resolved: 
+            return
         self.resolved = True
         
         payout = round(self.bet * TIER_MULTIPLIER.get(w_data.get("tier", "F").strip(), 1.0), 2)
@@ -631,41 +320,51 @@ class ChallengeResultView(discord.ui.View):
     @discord.ui.button(label="Challenger Won", style=discord.ButtonStyle.green)
     async def c_win(self, i: discord.Interaction, b: discord.ui.Button):
         if not any(r.name == "leader" for r in i.user.roles):
-            await i.response.send_message("Leaders only.", ephemeral=True); return
+            await i.response.send_message("Leaders only.", ephemeral=True)
+            return
         await self.resolve(i, self.c_mem, self.o_mem, self.c_data, self.o_data)
 
     @discord.ui.button(label="Opponent Won", style=discord.ButtonStyle.blurple)
     async def o_win(self, i: discord.Interaction, b: discord.ui.Button):
         if not any(r.name == "leader" for r in i.user.roles):
-            await i.response.send_message("Leaders only.", ephemeral=True); return
+            await i.response.send_message("Leaders only.", ephemeral=True)
+            return
         await self.resolve(i, self.o_mem, self.c_mem, self.o_data, self.c_data)
 
 class ChallengeAcceptView(discord.ui.View):
     def __init__(self, c_data, o_data, bet, c_mem, o_mem):
         super().__init__(timeout=120)
-        self.c_data, self.o_data, self.bet = c_data, o_data, bet
-        self.c_mem, self.o_mem = c_mem, o_mem
+        self.c_data = c_data
+        self.o_data = o_data
+        self.bet = bet
+        self.c_mem = c_mem
+        self.o_mem = o_mem
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
     async def accept(self, i: discord.Interaction, b: discord.ui.Button):
-        if i.user.id != self.o_mem.id: return
+        if i.user.id != self.o_mem.id: 
+            return
         await i.response.edit_message(view=ChallengeResultView(self.c_data, self.o_data, self.bet, self.c_mem, self.o_mem))
 
-@bot.tree.command(name="challenge", description="Challenge a player")
-@app_commands.describe(opponent="The opponent", bet="Points to bet")
-async def challenge(i: discord.Interaction, opponent: discord.Member, bet: float):
-    await i.response.defer()
-    if bet <= 0: await i.followup.send("Invalid bet", ephemeral=True); return
-    
-    c_data = await get_roster_player_by_discord(i.user.name)
-    o_data = await get_roster_player_by_discord(opponent.name)
-    
-    if not c_data or not o_data: await i.followup.send("Roster lookup failed.", ephemeral=True); return
-    if float(c_data.get('points',0)) < bet or float(o_data.get('points',0)) < bet:
-        await i.followup.send("Someone is too broke.", ephemeral=True); return
+# ─────────────────────────────────────────────────────────────
+# COMMANDS
+# ─────────────────────────────────────────────────────────────
+@bot.tree.command(name="sync", description="Sync commands (Admin Only)")
+@app_commands.default_permissions(administrator=True)
+async def sync(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        synced = await bot.tree.sync()
+        await interaction.followup.send(f"✅ Synced {len(synced)} commands.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed: {e}")
 
-    view = ChallengeAcceptView(c_data, o_data, bet, i.user, opponent)
-    await i.followup.send(f"⚔️ {i.user.mention} vs {opponent.mention} for `{bet}` pts", view=view)
+@bot.tree.command(name="scrim", description="Start a scrim scoreboard")
+@app_commands.describe(opponent="Opponent Clan", map_name="Map being played")
+async def scrim(interaction: discord.Interaction, opponent: str, map_name: str):
+    SCRIM_STATE["active"] = True
+    view = ScrimView("Kiss", opponent, map_name)
+    await interaction.response.send_message(embed=view.get_embed(), view=view)
 
 @bot.tree.command(name="members", description="View roster")
 async def members(i: discord.Interaction):
@@ -675,8 +374,9 @@ async def members(i: discord.Interaction):
         async with http_session.get(supabase_endpoint("roster?select=*"), headers=supabase_headers()) as resp:
             roster = await resp.json() if resp.status == 200 else []
             
-    lines = [f"**{p['name']}** | Tier: {p.get('tier', '?')} | Pts: {p.get('points',0)}" for p in roster]
+    lines = [f"**{p['name']}** | Pts: {p.get('points',0)}" for p in roster]
     pages = ["\n".join(lines[j:j+10]) for j in range(0, len(lines), 10)]
+    
     view = PaginationView(pages, "Kiss Clan Roster")
     await i.followup.send(embed=view.create_embed(), view=view)
 
@@ -684,19 +384,72 @@ async def members(i: discord.Interaction):
 @app_commands.autocomplete(player_id=roster_autocomplete)
 async def profile(i: discord.Interaction, player_id: str):
     await i.response.defer()
-    # Check roster for ID mapping
-    roster = get_cached("full_roster") or []
-    mapped_player = next((p for p in roster if p['name'].lower() == player_id.lower()), None)
-    if mapped_player: player_id = mapped_player['player_id']
-    
     data = await kirka_get_profile(player_id)
-    if not data: await i.followup.send("Not found"); return
+    if not data: 
+        await i.followup.send("Not found")
+        return
     
     stats = data.get('stats', {})
     kd = round(stats.get('kills',0)/max(stats.get('deaths',1),1),2)
     embed = discord.Embed(title=data.get('name'), description=f"#{data.get('shortId')}", color=discord.Color.green())
-    embed.add_field(name="KD", value=kd); embed.add_field(name="PRP", value=data.get('klo2V2',0))
+    embed.add_field(name="KD", value=kd)
+    embed.add_field(name="PRP", value=data.get('klo2V2',0))
     await i.followup.send(embed=embed)
+
+@bot.tree.command(name="playercard", description="Generate a profile image")
+@app_commands.autocomplete(name=roster_autocomplete)
+async def playercard(interaction: discord.Interaction, name: str):
+    await interaction.response.defer()
+    
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        await interaction.followup.send("❌ Pillow library not installed.", ephemeral=True)
+        return
+        
+    player = await get_roster_player_by_name(name)
+    if not player:
+        await interaction.followup.send("Player not found", ephemeral=True)
+        return
+        
+    profile = await kirka_get_profile(player['player_id'])
+    width, height = 500, 250
+    img = Image.new('RGB', (width, height), color=(20, 20, 25))
+    d = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("arial.ttf", 30)
+    except:
+        font = ImageFont.load_default()
+
+    d.rectangle([(10,10), (490, 240)], outline=(63, 207, 142), width=3)
+    d.text((30, 30), f"NAME: {player['name'].upper()}", fill=(255, 255, 255), font=font)
+    
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    file = discord.File(buffer, filename="card.png")
+    await interaction.followup.send(file=file)
+
+@bot.tree.command(name="challenge", description="Challenge a player")
+@app_commands.describe(opponent="The opponent", bet="Points to bet")
+async def challenge(i: discord.Interaction, opponent: discord.Member, bet: float):
+    await i.response.defer()
+    if bet <= 0: 
+        await i.followup.send("Invalid bet", ephemeral=True)
+        return
+    
+    c_data = await get_roster_player_by_discord(i.user.name)
+    o_data = await get_roster_player_by_discord(opponent.name)
+    
+    if not c_data or not o_data: 
+        await i.followup.send("Roster lookup failed.", ephemeral=True)
+        return
+    if float(c_data.get('points',0)) < bet or float(o_data.get('points',0)) < bet:
+        await i.followup.send("Someone is too broke.", ephemeral=True)
+        return
+
+    view = ChallengeAcceptView(c_data, o_data, bet, i.user, opponent)
+    await i.followup.send(f"⚔️ {i.user.mention} vs {opponent.mention} for `{bet}` pts", view=view)
 
 # ─────────────────────────────────────────────────────────────
 # EVENTS
@@ -704,20 +457,24 @@ async def profile(i: discord.Interaction, player_id: str):
 @bot.event
 async def on_ready():
     log.info(f"🚀 Logged in as {bot.user}")
-    log.info(f"📡 Connected to {len(bot.guilds)} servers")
+
+@bot.event
+async def on_connect():
+    log.info("📡 Connected to Discord Gateway")
 
 @bot.tree.error
 async def on_command_error(i: discord.Interaction, e):
     log.error(f"Command Error: {e}")
     if i.response.is_done():
-        if not i.is_done(): await i.followup.send(f"❌ Error: {e}", ephemeral=True)
+        if not i.is_done(): 
+            await i.followup.send(f"Error: {e}", ephemeral=True)
     else:
-        await i.response.send_message(f"❌ Error: {e}", ephemeral=True)
+        await i.response.send_message(f"Error: {e}", ephemeral=True)
 
-# Run
-try:
-    bot.run(os.environ.get('DISCORD_TOKEN'))
-except KeyboardInterrupt:
-    log.info("Shutting down...")
-except Exception as e:
-    log.critical(f"Fatal Error: {e}")
+if __name__ == "__main__":
+    try:
+        bot.run(os.environ.get('DISCORD_TOKEN'))
+    except KeyboardInterrupt:
+        log.info("Shutting down...")
+    except Exception as e:
+        log.critical(f"Fatal Error: {e}")
