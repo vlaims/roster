@@ -205,6 +205,14 @@ class ApplicationApprovalView(discord.ui.View):
         if guild:
             member = discord.utils.get(guild.members, name=self.discord_handle)
             if member:
+                # Add "declined" role
+                declined_role = discord.utils.get(guild.roles, name="declined")
+                if declined_role:
+                    await member.add_roles(declined_role)
+                # Remove "applicator" role if they have it
+                applicator_role = discord.utils.get(guild.roles, name="applicator")
+                if applicator_role:
+                    await member.remove_roles(applicator_role)
                 try:
                     await member.send("Your application got rejected your a fucking chud get better 😂😂😂")
                 except discord.Forbidden:
@@ -270,9 +278,14 @@ async def register(interaction: discord.Interaction, name: str, player_id: str):
     if interaction.channel.name not in ["apply", "general"]:
         await interaction.response.send_message("Use this command in `#apply` or `#general`.", ephemeral=True)
         return
+    # Check applicator role
+    applicator_role = discord.utils.get(interaction.guild.roles, name="applicator")
+    if not applicator_role or applicator_role not in interaction.user.roles:
+        await interaction.response.send_message("❌ You need the `applicator` role to apply.", ephemeral=True)
+        return
     await interaction.response.defer(ephemeral=True)
     logs_channel = discord.utils.get(interaction.guild.text_channels, name="application-logs")
-    admin_role   = discord.utils.get(interaction.guild.roles, name="leader")
+    admin_role   = discord.utils.get(interaction.guild.roles, name="smooch")
     if not logs_channel:
         await interaction.followup.send("Logs channel not found.", ephemeral=True)
         return
