@@ -41,6 +41,8 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
+# Global dictionary to track active stacks: { lobby_link: (message_id, author_id) }
+active_stacks = {}
 
 # ─────────────────────────────────────────────────────────────
 # 🌐 KIRKA API HELPERS
@@ -228,10 +230,10 @@ class StackLobbyView(discord.ui.View):
         super().__init__(timeout=None)
         self.lobby_link = lobby_link
 
-    @discord.ui.button(label="Copy Link", style=discord.ButtonStyle.blurple, custom_id="copy_lobby_link_btn")
+    @discord.ui.button(label="Get Copyable Link", style=discord.ButtonStyle.blurple, custom_id="copy_lobby_link_btn")
     async def copy_link(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Sending the raw text ephemerally gives the user an easily selectable string to copy instantly.
-        await interaction.response.send_message(f"{self.lobby_link}", ephemeral=True)
+        # Wrapping the link in backticks allows users to copy it with a single click in Discord
+        await interaction.response.send_message(f"`{self.lobby_link}`", ephemeral=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -527,9 +529,8 @@ async def ranked2v2(interaction: discord.Interaction):
 
 
 # ─────────────────────────────────────────────────────────────
-# 🆕 COMMAND 8: /stack — Broadcast Kirka Stack/Lobby Info (With 10-Min Cooldown)
+# 🆕 COMMAND 8: /stack — Broadcast Kirka Stack/Lobby Info (With Tracking)
 # ─────────────────────────────────────────────────────────────
-# 10 minutes = 600 seconds. A per-user cooldown bucket.
 @bot.tree.command(name="stack", description="Post a Kirka lobby link to form a competitive stack")
 @app_commands.describe(link="The Kirka lobby invitation URL")
 @app_commands.checks.cooldown(1, 600.0, key=lambda i: i.user.id)
@@ -559,12 +560,11 @@ async def stack(interaction: discord.Interaction, link: str):
     ping_mention = stack_role.mention if stack_role else "@stack ping"
 
     # Assemble visual layout matching image_521384.jpg schema
-    # Using # and ## headers inside the description makes the text extremely huge.
     embed = discord.Embed(color=discord.Color.from_rgb(63, 207, 142))
     embed.description = (
         f"# SnD Lobby Link For Stack\n"
-        f"### {link}\n\n"
-        f"Join the stack/lobby for freelo 😼 {ping_mention}"
+        f"Link to join with {link}\n\n"
+        f"# Join the stack/lobby for freelo 😼 {ping_mention}"
     )
     
     # Inject Turtle visual assets referencing image_5278dd.png
@@ -579,6 +579,9 @@ async def stack(interaction: discord.Interaction, link: str):
         # Send the main broadcast message directly into the #current-link channel.
         msg = await target_channel.send(content=ping_mention, embed=embed, view=view)
         
+        # Track this stack globally so it can be manually deleted later
+        active_stacks[link] = (msg.id, interaction.user.id)
+        
         # Inform the command executioner that it was successfully routed
         await interaction.followup.send(f"✅ Stack successfully broadcasted to {target_channel.mention}!", ephemeral=True)
     except discord.Forbidden:
@@ -587,36 +590,11 @@ async def stack(interaction: discord.Interaction, link: str):
 
     # Automatically delete the message after 30 minutes (1800 seconds)
     try:
-        await msg.delete(delay=1800)
-    except discord.HTTPException as e:
-        print(f"[Stack Log] Could not auto-delete message {msg.id}: {e}")
+        await msg.delete(delay=600)
+        # Clean up tracking cache after it auto-deletes
+        if link in active_stacks and active_stacks[link][0] == msg.id:
+            active_stacks.pop(link, None)
+    except discord.HTTPException:
+        pass
 
-
-# ─────────────────────────────────────────────────────────────
-# 🛡️ GLOBAL COOLDOWN ERROR HANDLER & BYPASS FOR ADMINS
-# ─────────────────────────────────────────────────────────────
-@stack.error
-async def stack_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.CommandOnCooldown):
-        # Bypass check: If the user is an Administrator, reset the cooldown and let them run it
-        if interaction.user.guild_permissions.administrator:
-            ctx = await bot.get_context(interaction)
-            stack.cooldown.reset(interaction)
-            # Re-run the command logic seamlessly
-            await stack.callback(interaction, **interaction.namespace.__dict__)
-            return
-
-        # Calculate remaining time cleanly
-        minutes = int(error.retry_after // 60)
-        seconds = int(error.retry_after % 60)
-        
-        time_left = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
-        
-        await interaction.response.send_message(
-            f"⏳ **Command on Cooldown!** You can use this command again in `{time_left}`.", 
-            ephemeral=True
-        )
-    else:
-        # Pass any other errors down to the console
-        print(f"[Stack Error]: {error}")
 bot.run(os.environ.get('DISCORD_TOKEN'))
