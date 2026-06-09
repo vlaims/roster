@@ -564,7 +564,7 @@ async def stack(interaction: discord.Interaction, link: str):
     embed.description = (
         f"# SnD Lobby Link For Stack\n"
         f"# Stack by @{interaction.user.name}\n\n"
-        f"{link}\n\n"
+        f"### {link}\n\n"
         f"# Join the stack/lobby for freelo 😼 {ping_mention}"
     )
     
