@@ -529,7 +529,7 @@ async def ranked2v2(interaction: discord.Interaction):
 
 
 # ─────────────────────────────────────────────────────────────
-# 🆕 COMMAND 8: /stack — Broadcast Kirka Stack/Lobby Info (With Tracking)
+# 🆕 COMMAND 8: /stack — Broadcast Kirka Stack/Lobby Info (With Creator Tags)
 # ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="stack", description="Post a Kirka lobby link to form a competitive stack")
 @app_commands.describe(link="The Kirka lobby invitation URL")
@@ -563,14 +563,17 @@ async def stack(interaction: discord.Interaction, link: str):
     embed = discord.Embed(color=discord.Color.from_rgb(63, 207, 142))
     embed.description = (
         f"# SnD Lobby Link For Stack\n"
-        f"Link to join with {link}\n\n"
+        f"### Stack by @{interaction.user.name}\n\n"
+        f"{link}\n\n"
         f"# Join the stack/lobby for freelo 😼 {ping_mention}"
     )
     
     # Inject Turtle visual assets referencing image_5278dd.png
     turtle_img = "https://media.discordapp.net/attachments/802970220909297715/1451956744074035311/turtle.png?ex=6a28d757&is=6a2785d7&hm=b61dc16c258b4f2cb97207bd231fcb69e98be5bd926cba9692490ab263e58bb0&=&format=webp&quality=lossless&width=1429&height=804"
     embed.set_image(url=turtle_img)
-    embed.set_footer(text="Kirka Stack Queue Tracker | Auto-deletes after 30 minutes")
+    
+    # Appends the "link sent by @user" context to the right corner footer
+    embed.set_footer(text=f"Kirka Stack Queue Tracker | Auto-deletes after 10 minutes • Link sent by @{interaction.user.name}")
 
     # Present view with UI interactive callback items
     view = StackLobbyView(lobby_link=link)
@@ -588,7 +591,7 @@ async def stack(interaction: discord.Interaction, link: str):
         await interaction.followup.send("❌ **Permission Error:** The bot doesn't have permission to send messages in `#current-link`.", ephemeral=True)
         return
 
-    # Automatically delete the message after 30 minutes (1800 seconds)
+    # Automatically delete the message after 10 minutes (600 seconds)
     try:
         await msg.delete(delay=600)
         # Clean up tracking cache after it auto-deletes
