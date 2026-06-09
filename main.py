@@ -221,6 +221,20 @@ class ApplicationApprovalView(discord.ui.View):
 
 
 # ─────────────────────────────────────────────────────────────
+# 📋 LOBBY INTERACTIVE BUTTON (For /stack)
+# ─────────────────────────────────────────────────────────────
+class StackLobbyView(discord.ui.View):
+    def __init__(self, lobby_link: str):
+        super().__init__(timeout=None)
+        self.lobby_link = lobby_link
+
+    @discord.ui.button(label="Copy Link", style=discord.ButtonStyle.blurple, custom_id="copy_lobby_link_btn")
+    async def copy_link(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Sending the raw text ephemerally gives the user an easily selectable string to copy instantly.
+        await interaction.response.send_message(f"{self.lobby_link}", ephemeral=True)
+
+
+# ─────────────────────────────────────────────────────────────
 # COMMAND 1: /members — Roster from Supabase
 # ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="members", description="Previews all registered data from the Supabase clan roster")
@@ -337,8 +351,6 @@ async def kick(interaction: discord.Interaction, name: str):
 
 # ─────────────────────────────────────────────────────────────
 # COMMAND 4: /prp — PRP + K/D for all roster players
-# Fetches each player's profile from the public Kirka API.
-# PRP = klo2V2, K/D = stats.kills / stats.deaths
 # ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="prp", description="Check Ranked 2v2 Points and K/D for all roster players")
 async def prp(interaction: discord.Interaction):
@@ -512,6 +524,45 @@ async def ranked2v2(interaction: discord.Interaction):
     title = f"🏆 Global Ranked 2v2 Leaderboard" + (f" — Season {season}" if season else "")
     view  = PaginationView(pages=pages, title=title)
     await interaction.followup.send(embed=view.create_embed(), view=view)
+
+
+# ─────────────────────────────────────────────────────────────
+# 🆕 COMMAND 8: /stack — Broadcast Kirka Stack/Lobby Info
+# ─────────────────────────────────────────────────────────────
+@bot.tree.command(name="stack", description="Post a Kirka lobby link to form a competitive stack")
+@app_commands.describe(link="The Kirka lobby invitation URL")
+async def stack(interaction: discord.Interaction, link: str):
+    # Enforce strict domain presence rule
+    if "https://kirka.io/___lobby___/" not in link:
+        await interaction.response.send_message(
+            "❌ **Invalid link variant.** Make sure your link contains exactly: `https://kirka.io/___lobby___/`", 
+            ephemeral=True
+        )
+        return
+
+    # Defer to assemble payload elements asynchronously
+    await interaction.response.defer()
+
+    # Try resolving an explicit target role named 'stack'. If missing, fallback elegantly.
+    stack_role = discord.utils.get(interaction.guild.roles, name="stack")
+    ping_mention = stack_role.mention if stack_role else "@stack"
+
+    # Assemble visual layout matching image_521384.jpg schema
+    embed = discord.Embed(
+        title="/snd stack",
+        description=f"Join the stack/lobby for freelo 😼 {ping_mention}",
+        color=discord.Color.from_rgb(63, 207, 142)
+    )
+    embed.add_field(name="Lobby Link", value=f"[Click Here to Join Lobby]({link})\n`{link}`", inline=False)
+    
+    # Inject Turtle visual assets referencing image_5278dd.png
+    turtle_img = "https://media.discordapp.net/attachments/802970220909297715/1451956744074035311/turtle.png?ex=6a28d757&is=6a2785d7&hm=b61dc16c258b4f2cb97207bd231fcb69e98be5bd926cba9692490ab263e58bb0&=&format=webp&quality=lossless&width=1429&height=804"
+    embed.set_image(url=turtle_img)
+    embed.set_footer(text="Kirka Stack Queue Tracker")
+
+    # Present view with UI interactive callback items
+    view = StackLobbyView(lobby_link=link)
+    await interaction.followup.send(embed=embed, view=view)
 
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
