@@ -527,7 +527,7 @@ async def ranked2v2(interaction: discord.Interaction):
 
 
 # ─────────────────────────────────────────────────────────────
-# 🆕 COMMAND 8: /stack — Broadcast Kirka Stack/Lobby Info
+# 🆕 COMMAND 8: /stack — Broadcast Kirka Stack/Lobby Info (Sends to #current-link)
 # ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="stack", description="Post a Kirka lobby link to form a competitive stack")
 @app_commands.describe(link="The Kirka lobby invitation URL")
@@ -540,29 +540,55 @@ async def stack(interaction: discord.Interaction, link: str):
         )
         return
 
-    # Defer to assemble payload elements asynchronously
-    await interaction.response.defer()
+    # Defer the response ephemerally so the user knows it's processing
+    await interaction.response.defer(ephemeral=True)
 
-    # Try resolving an explicit target role named 'stack'. If missing, fallback elegantly.
-    stack_role = discord.utils.get(interaction.guild.roles, name="stack")
-    ping_mention = stack_role.mention if stack_role else "@stack"
+    # 1. Look for the target channel named 'current-link'
+    target_channel = discord.utils.get(interaction.guild.text_channels, name="current-link")
+    if not target_channel:
+        await interaction.followup.send(
+            "❌ **Channel Error:** Could not find a text channel named `#current-link`. Please create it first.", 
+            ephemeral=True
+        )
+        return
+
+    # 2. Look for the target role named 'stack ping'
+    stack_role = discord.utils.get(interaction.guild.roles, name="stack ping")
+    ping_mention = stack_role.mention if stack_role else "@stack ping"
 
     # Assemble visual layout matching image_521384.jpg schema
     embed = discord.Embed(
-        title="/snd stack",
-        description=f"Join the stack/lobby for freelo 😼 {ping_mention}",
+        title="# SND Stack",
+        description=(
+            f"{link}\n\n"
+            f"Join the stack/lobby for freelo 😼 {ping_mention}"
+        ),
         color=discord.Color.from_rgb(63, 207, 142)
     )
-    embed.add_field(name="Lobby Link", value=f"[Click Here to Join Lobby]({link})\n`{link}`", inline=False)
     
     # Inject Turtle visual assets referencing image_5278dd.png
     turtle_img = "https://media.discordapp.net/attachments/802970220909297715/1451956744074035311/turtle.png?ex=6a28d757&is=6a2785d7&hm=b61dc16c258b4f2cb97207bd231fcb69e98be5bd926cba9692490ab263e58bb0&=&format=webp&quality=lossless&width=1429&height=804"
     embed.set_image(url=turtle_img)
-    embed.set_footer(text="Kirka Stack Queue Tracker")
+    embed.set_footer(text="Kirka Stack Queue Tracker | Auto-deletes after 30 minutes")
 
     # Present view with UI interactive callback items
     view = StackLobbyView(lobby_link=link)
-    await interaction.followup.send(embed=embed, view=view)
+    
+    try:
+        # Send the main broadcast message directly into the #current-link channel.
+        # We include the role ping as the content parameter so it properly notifications users.
+        msg = await target_channel.send(content=ping_mention, embed=embed, view=view)
+        
+        # Inform the command executioner that it was successfully routed
+        await interaction.followup.send(f"✅ Stack successfully broadcasted to {target_channel.mention}!", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("❌ **Permission Error:** The bot doesn't have permission to send messages in `#current-link`.", ephemeral=True)
+        return
 
+    # Automatically delete the message after 30 minutes (1800 seconds)
+    try:
+        await msg.delete(delay=1800)
+    except discord.HTTPException as e:
+        print(f"[Stack Log] Could not auto-delete message {msg.id}: {e}")
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
