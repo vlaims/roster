@@ -529,11 +529,11 @@ async def ranked2v2(interaction: discord.Interaction):
 
 
 # ─────────────────────────────────────────────────────────────
-# 🆕 COMMAND 8: /stack — Broadcast Kirka Stack/Lobby Info (With Creator Tags)
+# 🆕 COMMAND 8: /stack — Broadcast Kirka Stack/Lobby Info
 # ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="stack", description="Post a Kirka lobby link to form a competitive stack")
 @app_commands.describe(link="The Kirka lobby invitation URL")
-@app_commands.checks.cooldown(1, 600.0, key=lambda i: i.user.id)
+@app_commands.checks.cooldown(1, 600.0, key=lambda i: i.user.id) # 10 minutes for normal users
 async def stack(interaction: discord.Interaction, link: str):
     # Enforce strict domain presence rule
     if "https://kirka.io/___lobby___/" not in link:
@@ -563,7 +563,7 @@ async def stack(interaction: discord.Interaction, link: str):
     embed = discord.Embed(color=discord.Color.from_rgb(63, 207, 142))
     embed.description = (
         f"# SnD Lobby Link For Stack\n"
-        f"### Stack by @{interaction.user.name}\n\n"
+        f"# Stack by @{interaction.user.name}\n\n"
         f"{link}\n\n"
         f"# Join the stack/lobby for freelo 😼 {ping_mention}"
     )
@@ -583,7 +583,8 @@ async def stack(interaction: discord.Interaction, link: str):
         msg = await target_channel.send(content=ping_mention, embed=embed, view=view)
         
         # Track this stack globally so it can be manually deleted later
-        active_stacks[link] = (msg.id, interaction.user.id)
+        if 'active_stacks' in globals():
+            active_stacks[link] = (msg.id, interaction.user.id)
         
         # Inform the command executioner that it was successfully routed
         await interaction.followup.send(f"✅ Stack successfully broadcasted to {target_channel.mention}!", ephemeral=True)
@@ -595,10 +596,39 @@ async def stack(interaction: discord.Interaction, link: str):
     try:
         await msg.delete(delay=600)
         # Clean up tracking cache after it auto-deletes
-        if link in active_stacks and active_stacks[link][0] == msg.id:
+        if 'active_stacks' in globals() and link in active_stacks and active_stacks[link][0] == msg.id:
             active_stacks.pop(link, None)
     except discord.HTTPException:
         pass
+
+
+# ─────────────────────────────────────────────────────────────
+# 🛡️ COOLDOWN ERROR HANDLER & BYPASS FOR ADMINS
+# ─────────────────────────────────────────────────────────────
+@stack.error
+async def stack_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CommandOnCooldown):
+        # Bypass check: If the user is an Administrator, reset the cooldown and bypass the wait
+        if interaction.user.guild_permissions.administrator:
+            # Dynamically reset the cooldown for this user execution
+            stack.cooldown.reset(interaction)
+            
+            # Re-run the command callback instantly
+            await stack.callback(interaction, **interaction.namespace.__dict__)
+            return
+
+        # Otherwise, calculate and show remaining time for regular users
+        minutes = int(error.retry_after // 60)
+        seconds = int(error.retry_after % 60)
+        time_left = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+        
+        await interaction.response.send_message(
+            f"⏳ **Command on Cooldown!** Normal users must wait `{time_left}` before posting another stack link.", 
+            ephemeral=True
+        )
+    else:
+        # Route any unexpected bugs to console
+        print(f"[Stack Cooldown Error Handler Exception]: {error}")
 
 # ─────────────────────────────────────────────────────────────
 # 🆕 COMMAND 9: /deletestack — Scan and Delete Active Stack Link
@@ -683,5 +713,5 @@ async def deletestack(interaction: discord.Interaction, link: str):
         )
     except discord.Forbidden:
         await interaction.followup.send("❌ The bot lacks permission to delete messages in `#current-link`.", ephemeral=True)
-        
+
 bot.run(os.environ.get('DISCORD_TOKEN'))
