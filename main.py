@@ -600,65 +600,88 @@ async def stack(interaction: discord.Interaction, link: str):
     except discord.HTTPException:
         pass
 
-        # ─────────────────────────────────────────────────────────────
-# 🆕 COMMAND 9: /deletestack — Delete an active stack lobby
 # ─────────────────────────────────────────────────────────────
-@bot.tree.command(name="deletestack", description="Delete an active stack notice by its link")
+# 🆕 COMMAND 9: /deletestack — Scan and Delete Active Stack Link
+# ─────────────────────────────────────────────────────────────
+@bot.tree.command(name="deletestack", description="Delete an active stack notice by scanning #current-link")
 @app_commands.describe(link="The exact Kirka lobby link to delete")
 async def deletestack(interaction: discord.Interaction, link: str):
+    # Enforce basic validation so we aren't scanning unnecessarily
+    if "https://kirka.io/___lobby___/" not in link:
+        await interaction.response.send_message(
+            "❌ **Invalid link format.** Make sure you paste the complete Kirka lobby URL.", 
+            ephemeral=True
+        )
+        return
+
     await interaction.response.defer(ephemeral=True)
 
-    # 1. Check if the stack link exists in our active tracking system
-    if link not in active_stacks:
+    # 1. Locate the text channel
+    target_channel = discord.utils.get(interaction.guild.text_channels, name="current-link")
+    if not target_channel:
+        await interaction.followup.send(
+            "❌ Could not find the `#current-link` channel to search for messages.", 
+            ephemeral=True
+        )
+        return
+
+    target_message = None
+
+    # 2. Scan the recent message history of the channel for the full link
+    try:
+        # Scanning the last 50 messages is usually more than enough for an active link channel
+        async for message in target_channel.history(limit=50):
+            # Check if the message contains the exact full link string
+            if message.embeds and len(message.embeds) > 0:
+                embed_desc = message.embeds[0].description or ""
+                if link in embed_desc:
+                    target_message = message
+                    break
+            elif link in message.content:
+                target_message = message
+                break
+    except discord.Forbidden:
+        await interaction.followup.send("❌ The bot lacks permissions to read history in `#current-link`.", ephemeral=True)
+        return
+
+    # 3. If the link can't be found anywhere in the channel history
+    if not target_message:
         await interaction.followup.send(
             "❌ There is no stack ping with that link or it has been auto deleted by the bot already.",
             ephemeral=True
         )
         return
 
-    message_id, creator_id = active_stacks[link]
+    # 4. Check Authorization (Only creator or Admin can delete)
     is_admin = interaction.user.guild_permissions.administrator
-
-    # 2. Check authorization: must be the original creator OR a server admin
-    if interaction.user.id != creator_id and not is_admin:
+    
+    # We can read who triggered the original command from the embed description or footer metadata
+    creator_match = f"Stack by @{interaction.user.name}" in (target_message.embeds[0].description or "")
+    footer_match = f"Link sent by @{interaction.user.name}" in (target_message.embeds[0].footer.text or "")
+    
+    if not creator_match and not footer_match and not is_admin:
         await interaction.followup.send(
             "❌ Not authorized. Only the stack creator or an Administrator can delete this link.", 
             ephemeral=True
         )
         return
 
-    # 3. Locate the text channel
-    target_channel = discord.utils.get(interaction.guild.text_channels, name="current-link")
-    if not target_channel:
-        await interaction.followup.send(
-            "❌ Could not find the `#current-link` channel to remove the message.", 
-            ephemeral=True
-        )
-        return
-
-    # 4. Attempt to delete the message off Discord
+    # 5. Execute the deletion
     try:
-        partial_msg = target_channel.get_partial_message(message_id)
-        await partial_msg.delete()
+        await target_message.delete()
         
-        # Remove from tracking memory
-        active_stacks.pop(link, None)
-        
-        await interaction.followup.send("✅ The stack notice has been successfully deleted!", ephemeral=True)
+        # Clean up the old memory reference too if it exists
+        if 'active_stacks' in globals() and link in active_stacks:
+            active_stacks.pop(link, None)
+            
+        await interaction.followup.send("✅ The stack ping has been successfully deleted!", ephemeral=True)
         
     except discord.NotFound:
-        # Fallback if the message was already deleted manually outside the system
-        active_stacks.pop(link, None)
         await interaction.followup.send(
             "❌ There is no stack ping with that link or it has been auto deleted by the bot already.", 
             ephemeral=True
         )
     except discord.Forbidden:
-        await interaction.followup.send(
-            "❌ The bot lacks permission to delete messages in `#current-link`.", 
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.followup.send(f"❌ An unexpected error occurred: {e}", ephemeral=True)
-
+        await interaction.followup.send("❌ The bot lacks permission to delete messages in `#current-link`.", ephemeral=True)
+        
 bot.run(os.environ.get('DISCORD_TOKEN'))
