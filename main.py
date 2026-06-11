@@ -22,7 +22,7 @@ def kirka_headers():
 # 🎨 HELPER: Fancy Bold Serif font mapper
 def to_fancy_font(text):
     normal_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    fancy_chars  = "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
+    fancy_chars  = "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳𝐀𝐁𝐂𝐃Ｅ𝐅𝐆𝐇Ｉ𝐉ＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
     trans = str.maketrans(normal_chars, fancy_chars)
     return str(text).translate(trans)
 
@@ -89,7 +89,7 @@ async def kirka_get_clan(clan_name: str):
         return None
 
 
-async def kirka_get_rankedSAD():
+async def kirka_get_ranked_sad():
     """GET /api/leaderboard/rankedSAD — returns leaderboard dict or None."""
     try:
         async with aiohttp.ClientSession() as session:
@@ -151,6 +151,59 @@ class PaginationView(discord.ui.View):
 
 
 # ─────────────────────────────────────────────────────────────
+# 📊 INTERACTIVE VIEW FOR /clanSAD
+# ─────────────────────────────────────────────────────────────
+class ClanSADView(discord.ui.View):
+    def __init__(self, players_data: list):
+        super().__init__(timeout=120)
+        self.players_data = players_data  # List of dicts containing profile data
+        self.mode = "clan"  # Default layout configuration mode
+
+    def generate_embed(self):
+        embed = discord.Embed(color=discord.Color.from_rgb(63, 207, 142))
+        
+        if self.mode == "clan":
+            embed.title = "🏰 Kiss Clan Leaderboard (Ranked by Clan Standings)"
+            # Sort explicitly by internal KLO numbers
+            sorted_players = sorted(self.players_data, key=lambda x: x.get('kloSAD', 0), reverse=True)
+            description_lines = []
+            for idx, p in enumerate(sorted_players, 1):
+                fancy_name = to_fancy_font(p.get('name', 'Unknown'))
+                klo_val = p.get('kloSAD', 0)
+                global_pos = p.get('global_pos', 'N/A')
+                description_lines.append(f"**{idx}. {fancy_name}** — KLO: `{klo_val:,.2f}` (Global `#{global_pos}`)")
+            embed.description = "\n".join(description_lines) if description_lines else "No players found from clan kiss in top 100."
+            
+        else:
+            embed.title = "🌍 Kiss Clan Leaderboard (Ranked by True Global Position)"
+            # Sort explicitly based on original leaderboard index
+            sorted_players = sorted(self.players_data, key=lambda x: x.get('global_pos', 999))
+            description_lines = []
+            for p in sorted_players:
+                global_pos = p.get('global_pos', 'N/A')
+                fancy_name = to_fancy_font(p.get('name', 'Unknown'))
+                klo_val = p.get('kloSAD', 0)
+                description_lines.append(f"**#{global_pos}. {fancy_name}** — KLO: `{klo_val:,.2f}`")
+            embed.description = "\n".join(description_lines) if description_lines else "No players found from clan kiss in top 100."
+
+        embed.set_footer(text="Data from api.kirka.io | Managed by vlaims")
+        return embed
+
+    @discord.ui.button(label="Global Ranking", style=discord.ButtonStyle.blurple, custom_id="toggle_sorting_btn")
+    async def toggle_sorting(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.mode == "clan":
+            self.mode = "global"
+            button.label = "Clan Ranking"
+            button.style = discord.ButtonStyle.green
+        else:
+            self.mode = "clan"
+            button.label = "Global Ranking"
+            button.style = discord.ButtonStyle.blurple
+            
+        await interaction.response.edit_message(embed=self.generate_embed(), view=self)
+
+
+# ─────────────────────────────────────────────────────────────
 # 🔘 ADMIN APPROVAL BUTTONS
 # ─────────────────────────────────────────────────────────────
 class ApplicationApprovalView(discord.ui.View):
@@ -207,11 +260,9 @@ class ApplicationApprovalView(discord.ui.View):
         if guild:
             member = discord.utils.get(guild.members, name=self.discord_handle)
             if member:
-                # Add "declined" role
                 declined_role = discord.utils.get(guild.roles, name="declined")
                 if declined_role:
                     await member.add_roles(declined_role)
-                # Remove "applicator" role if they have it
                 applicator_role = discord.utils.get(guild.roles, name="applicator")
                 if applicator_role:
                     await member.remove_roles(applicator_role)
@@ -232,7 +283,6 @@ class StackLobbyView(discord.ui.View):
 
     @discord.ui.button(label="Get Copyable Link", style=discord.ButtonStyle.blurple, custom_id="copy_lobby_link_btn")
     async def copy_link(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Wrapping the link in backticks allows users to copy it with a single click in Discord
         await interaction.response.send_message(f"`{self.lobby_link}`", ephemeral=True)
 
 
@@ -273,10 +323,10 @@ async def members(interaction: discord.Interaction):
             fancy_name = to_fancy_font(item.get('name', 'Unknown'))
             player_id  = item.get('player_id', 'N/A')
             discord_user = item.get('discord_handle', 'N/A')
-            player_tier  = item.get('tier', 'Unranked') # 🆕 Added Tier
+            player_tier  = item.get('tier', 'Unranked')
             
             all_lines.append(
-                f"**{index}. {fancy_name}** | `{player_tier}`\n" # 🆕 Added Tier to display
+                f"**{index}. {fancy_name}** | `{player_tier}`\n"
                 f"- # ↳ *ID:* `{player_id}` • *Discord:* `@{discord_user}`"
             )
         pages_content = ["\n".join(all_lines[i:i+5]) for i in range(0, len(all_lines), 5)]
@@ -296,7 +346,6 @@ async def register(interaction: discord.Interaction, name: str, player_id: str):
     if interaction.channel.name not in ["apply", "general"]:
         await interaction.response.send_message("Use this command in `#apply` or `#general`.", ephemeral=True)
         return
-    # Check applicator role
     applicator_role = discord.utils.get(interaction.guild.roles, name="applicator")
     if not applicator_role or applicator_role not in interaction.user.roles:
         await interaction.response.send_message("❌ You need the `applicator` role to apply.", ephemeral=True)
@@ -352,9 +401,9 @@ async def kick(interaction: discord.Interaction, name: str):
 
 
 # ─────────────────────────────────────────────────────────────
-# COMMAND 4: /prp — PRP + K/D for all roster players
+# COMMAND 4: /prp — Now configured for kloSAD metrics tracking
 # ─────────────────────────────────────────────────────────────
-@bot.tree.command(name="prp", description="Check Ranked Search and Destroy Points and K/D for all roster players")
+@bot.tree.command(name="prp", description="Check Ranked SAD Points and K/D for all roster players")
 async def prp(interaction: discord.Interaction):
     await interaction.response.defer()
     supabase_url = os.environ.get('SUPABASE_URL')
@@ -375,7 +424,7 @@ async def prp(interaction: discord.Interaction):
             await interaction.followup.send("No players found in the roster.")
             return
         total = len(roster_data)
-        status_msg = await interaction.followup.send(f"🔍 Fetching stats for {total} players...")
+        status_msg = await interaction.followup.send(f"🔍 Fetching SAD stats for {total} players...")
         results = []
         for idx, player in enumerate(roster_data, 1):
             player_id = player.get('player_id', '').strip()
@@ -391,15 +440,15 @@ async def prp(interaction: discord.Interaction):
                     prp_val = float(profile.get('kloSAD', 0) or 0)
                     stats   = profile.get('stats', {})
                     kills   = stats.get('kills', 0) or 0
-                    deaths  = stats.get('deaths', 0) or 1  # avoid div/0
+                    deaths  = stats.get('deaths', 0) or 1
                     kd_val  = round(kills / deaths, 2)
-                    results.append({'name': name, 'KLO': prp_val, 'kd': kd_val, 'found': True})
+                    results.append({'name': name, 'prp': prp_val, 'kd': kd_val, 'found': True})
                 else:
-                    results.append({'name': name, 'KLO': 0.0, 'kd': 0.0, 'found': False})
+                    results.append({'name': name, 'prp': 0.0, 'kd': 0.0, 'found': False})
             else:
                 results.append({'name': name, 'prp': 0.0, 'kd': 0.0, 'found': False})
         results.sort(key=lambda x: x['prp'], reverse=True)
-        embed = discord.Embed(title="🏆 Ranked SAD Leaderboard", color=discord.Color.gold())
+        embed = discord.Embed(title="🏆 Ranked Search & Destroy Leaderboard", color=discord.Color.gold())
         leaderboard_text = ""
         for idx, p in enumerate(results, 1):
             fancy_name  = to_fancy_font(p['name'])
@@ -408,7 +457,7 @@ async def prp(interaction: discord.Interaction):
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, f"**{idx}.**")
             leaderboard_text += (
                 f"{medal} **{fancy_name}**\n"
-                f"┣ PRP: `{prp_display}`\n"
+                f"┣ KLO SAD: `{prp_display}`\n"
                 f"┗ K/D: `{kd_display}`\n\n"
             )
         embed.description = leaderboard_text
@@ -420,7 +469,7 @@ async def prp(interaction: discord.Interaction):
 
 
 # ─────────────────────────────────────────────────────────────
-# COMMAND 5: /profile — Look up any player's full profile
+# COMMAND 5: /profile — Profile lookup utilizing kloSAD
 # ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="profile", description="Look up a Kirka player's profile by their short ID")
 @app_commands.describe(player_id="The player's short ID (e.g. XMNVRX)")
@@ -434,7 +483,7 @@ async def profile(interaction: discord.Interaction, player_id: str):
     kills  = stats.get('kills', 0) or 0
     deaths = stats.get('deaths', 0) or 1
     kd     = round(kills / deaths, 2)
-    prp    = data.get('klo2V2', 0)
+    prp    = data.get('kloSAD', 0)
 
     embed = discord.Embed(
         title=f"{data.get('name', 'Unknown')}  •  #{data.get('shortId', player_id)}",
@@ -443,7 +492,7 @@ async def profile(interaction: discord.Interaction, player_id: str):
     embed.add_field(name="Level",    value=data.get('level', 'N/A'),  inline=True)
     embed.add_field(name="Clan",     value=data.get('clan') or 'None', inline=True)
     embed.add_field(name="Role",     value=data.get('role', 'N/A'),   inline=True)
-    embed.add_field(name="kloSAD", value=f"`{prp:,.2f}`",          inline=True)
+    embed.add_field(name="KLO (SAD)", value=f"`{prp:,.2f}`",          inline=True)
     embed.add_field(name="K/D",       value=f"`{kd:.2f}`",            inline=True)
     embed.add_field(name="Kills",     value=f"`{kills:,}`",           inline=True)
     embed.add_field(name="Deaths",    value=f"`{stats.get('deaths', 0):,}`", inline=True)
@@ -465,20 +514,19 @@ async def claninfo(interaction: discord.Interaction):
     if not data:
         await interaction.followup.send("❌ Could not fetch clan data from Kirka.")
         return
-    members = data.get('members', [])
-    members_sorted = sorted(members, key=lambda m: m.get('monthScores', 0), reverse=True)
-    # Overview embed
+    members_list = data.get('members', [])
+    members_sorted = sorted(members_list, key=lambda m: m.get('monthScores', 0), reverse=True)
     overview = discord.Embed(
         title=f"🏰 Clan: {data.get('name', 'kiss').upper()}",
         description=data.get('description') or '',
         color=discord.Color.from_rgb(63, 207, 142)
     )
-    overview.add_field(name="Members",        value=f"`{len(members)}`",                          inline=True)
+    overview.add_field(name="Members",        value=f"`{len(members_list)}`",                          inline=True)
     overview.add_field(name="Clan War Rank",   value=f"`#{data.get('currentClanWarPosition','?')}`", inline=True)
     overview.add_field(name="Month Scores",    value=f"`{data.get('monthScores', 0):,}`",          inline=True)
     overview.add_field(name="All-Time Scores", value=f"`{data.get('allScores', 0):,}`",            inline=True)
     overview.set_footer(text="Data from api.kirka.io | Made by vlaims")
-    # Build member pages (5 per page)
+    
     lines = []
     for idx, m in enumerate(members_sorted, 1):
         user         = m.get('user', {})
@@ -492,50 +540,90 @@ async def claninfo(interaction: discord.Interaction):
             f"┗ Month Scores: `{month_scores:,}`"
         )
     pages = ["\n\n".join(lines[i:i+5]) for i in range(0, len(lines), 5)]
-    view  = PaginationView(pages=pages, title="🏰 Kiss Clan Members", total_label=f"Total Members: {len(members)}")
+    view  = PaginationView(pages=pages, title="🏰 Kiss Clan Members", total_label=f"Total Members: {len(members_list)}")
     await interaction.followup.send(embed=overview)
     await interaction.followup.send(embed=view.create_embed(), view=view)
 
 
 # ─────────────────────────────────────────────────────────────
-# COMMAND 7: /ranked2v2 — Global Kirka ranked 2v2 leaderboard
+# COMMAND 7: /rankedsad — Global Search & Destroy Leaderboard
 # ─────────────────────────────────────────────────────────────
-@bot.tree.command(name="ranked2v2", description="Show the global Kirka ranked 2v2 leaderboard")
-async def ranked2v2(interaction: discord.Interaction):
+@bot.tree.command(name="rankedsad", description="Show the global Kirka ranked Search & Destroy leaderboard")
+async def rankedsad(interaction: discord.Interaction):
     await interaction.response.defer()
-    data = await kirka_get_ranked2v2()
+    data = await kirka_get_ranked_sad()
     if not data:
-        await interaction.followup.send("❌ Could not fetch ranked 2v2 leaderboard from Kirka.")
+        await interaction.followup.send("❌ Could not fetch ranked SAD leaderboard from Kirka.")
         return
     results = data.get('results', [])
     season  = data.get('season')
     if not results:
-        await interaction.followup.send("The ranked 2v2 leaderboard is currently empty (no active season).")
+        await interaction.followup.send("The ranked SAD leaderboard is currently empty.")
         return
     lines = []
     for idx, entry in enumerate(results, 1):
         fancy_name = to_fancy_font(entry.get('name', 'Unknown'))
         short_id   = entry.get('shortId', 'N/A')
-        prp        = entry.get('klo2V2', 0)
+        prp        = entry.get('kloSAD', 0)
         medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, f"**{idx}.**")
         lines.append(
             f"{medal} **{fancy_name}** `#{short_id}`\n"
-            f"┗ PRP: `{prp:,.2f}`"
+            f"┗ KLO: `{prp:,.2f}`"
         )
     pages = ["\n\n".join(lines[i:i+10]) for i in range(0, len(lines), 10)]
-    title = f"🏆 Global Ranked 2v2 Leaderboard" + (f" — Season {season}" if season else "")
+    title = f"🏆 Global Ranked Search & Destroy Leaderboard" + (f" — Season {season}" if season else "")
     view  = PaginationView(pages=pages, title=title)
     await interaction.followup.send(embed=view.create_embed(), view=view)
 
 
 # ─────────────────────────────────────────────────────────────
-# 🆕 COMMAND 8: /stack — Broadcast Kirka Stack/Lobby Info
+# 🆕 COMMAND 8: /clanSAD — Filters Kiss clan members from S&D top 100
+# ─────────────────────────────────────────────────────────────
+@bot.tree.command(name="clansad", description="Displays top 100 players belonging to 'kiss' clan on SAD leaderboard")
+async def clansad(interaction: discord.Interaction):
+    await interaction.response.defer()
+    data = await kirka_get_ranked_sad()
+    if not data:
+        await interaction.followup.send("❌ Failed to query global SAD leaderboard from Kirka.")
+        return
+        
+    results = data.get('results', [])
+    if not results:
+        await interaction.followup.send("The ranked SAD leaderboard returns zero active players.")
+        return
+
+    kiss_players = []
+    # Loop over the top 100 entries to check user details 
+    for idx, entry in enumerate(results[:100], 1):
+        short_id = entry.get('shortId')
+        if not short_id:
+            continue
+            
+        # Perform dynamic API checking call against individual profiles
+        profile = await kirka_get_profile(short_id)
+        if profile and str(profile.get('clan', '')).lower() == 'kiss':
+            kiss_players.append({
+                'name': profile.get('name', 'Unknown'),
+                'kloSAD': float(profile.get('kloSAD', 0) or 0),
+                'global_pos': idx
+            })
+
+    if not kiss_players:
+        await interaction.followup.send("No players found on the top 100 Search & Destroy leaderboard matching the 'kiss' clan.")
+        return
+
+    # Pass elements down into the visual layout toggler view
+    view = ClanSADView(players_data=kiss_players)
+    await interaction.followup.send(embed=view.generate_embed(), view=view)
+
+
+# ─────────────────────────────────────────────────────────────
+# COMMAND 9: /stack — Broadcast Kirka Stack/Lobby Info
 # ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="stack", description="Post a Kirka lobby link to form a competitive stack")
 @app_commands.describe(link="The Kirka lobby invitation URL")
-@app_commands.checks.cooldown(1, 600.0, key=lambda i: i.user.id) # 10 minutes for normal users
+@app_commands.checks.cooldown(1, 600.0, key=lambda i: i.user.id)
 async def stack(interaction: discord.Interaction, link: str):
-    # Enforce strict domain presence rule
     if "https://kirka.io/___lobby___/" not in link:
         await interaction.response.send_message(
             "❌ **Invalid link variant.** Make sure your link contains exactly: `https://kirka.io/___lobby___/`", 
@@ -543,10 +631,8 @@ async def stack(interaction: discord.Interaction, link: str):
         )
         return
 
-    # Defer the response ephemerally so the user knows it's processing
     await interaction.response.defer(ephemeral=True)
 
-    # 1. Look for the target channel named 'current-link'
     target_channel = discord.utils.get(interaction.guild.text_channels, name="current-link")
     if not target_channel:
         await interaction.followup.send(
@@ -555,11 +641,9 @@ async def stack(interaction: discord.Interaction, link: str):
         )
         return
 
-    # 2. Look for the target role named 'stack ping'
     stack_role = discord.utils.get(interaction.guild.roles, name="stack ping")
     ping_mention = stack_role.mention if stack_role else "@stack ping"
 
-    # Assemble visual layout matching image_521384.jpg schema
     embed = discord.Embed(color=discord.Color.from_rgb(63, 207, 142))
     embed.description = (
         f"# SnD Lobby Link For Stack\n"
@@ -568,56 +652,37 @@ async def stack(interaction: discord.Interaction, link: str):
         f"# Join the stack/lobby for freelo 😼 {ping_mention}"
     )
     
-    # Inject Turtle visual assets referencing image_5278dd.png
     turtle_img = "https://media.discordapp.net/attachments/802970220909297715/1451956744074035311/turtle.png?ex=6a28d757&is=6a2785d7&hm=b61dc16c258b4f2cb97207bd231fcb69e98be5bd926cba9692490ab263e58bb0&=&format=webp&quality=lossless&width=1429&height=804"
     embed.set_image(url=turtle_img)
-    
-    # Appends the "link sent by @user" context to the right corner footer
     embed.set_footer(text=f"Kirka Stack Queue Tracker | Auto-deletes after 10 minutes • Link sent by @{interaction.user.name}")
 
-    # Present view with UI interactive callback items
     view = StackLobbyView(lobby_link=link)
     
     try:
-        # Send the main broadcast message directly into the #current-link channel.
         msg = await target_channel.send(content=ping_mention, embed=embed, view=view)
-        
-        # Track this stack globally so it can be manually deleted later
         if 'active_stacks' in globals():
             active_stacks[link] = (msg.id, interaction.user.id)
-        
-        # Inform the command executioner that it was successfully routed
         await interaction.followup.send(f"✅ Stack successfully broadcasted to {target_channel.mention}!", ephemeral=True)
     except discord.Forbidden:
         await interaction.followup.send("❌ **Permission Error:** The bot doesn't have permission to send messages in `#current-link`.", ephemeral=True)
         return
 
-    # Automatically delete the message after 10 minutes (600 seconds)
     try:
         await msg.delete(delay=600)
-        # Clean up tracking cache after it auto-deletes
         if 'active_stacks' in globals() and link in active_stacks and active_stacks[link][0] == msg.id:
             active_stacks.pop(link, None)
     except discord.HTTPException:
         pass
 
 
-# ─────────────────────────────────────────────────────────────
-# 🛡️ COOLDOWN ERROR HANDLER & BYPASS FOR ADMINS
-# ─────────────────────────────────────────────────────────────
 @stack.error
 async def stack_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CommandOnCooldown):
-        # Bypass check: If the user is an Administrator, reset the cooldown and bypass the wait
         if interaction.user.guild_permissions.administrator:
-            # Dynamically reset the cooldown for this user execution
             stack.cooldown.reset(interaction)
-            
-            # Re-run the command callback instantly
             await stack.callback(interaction, **interaction.namespace.__dict__)
             return
 
-        # Otherwise, calculate and show remaining time for regular users
         minutes = int(error.retry_after // 60)
         seconds = int(error.retry_after % 60)
         time_left = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
@@ -627,16 +692,15 @@ async def stack_error(interaction: discord.Interaction, error: app_commands.AppC
             ephemeral=True
         )
     else:
-        # Route any unexpected bugs to console
         print(f"[Stack Cooldown Error Handler Exception]: {error}")
 
+
 # ─────────────────────────────────────────────────────────────
-# 🆕 COMMAND 9: /deletestack — Scan and Delete Active Stack Link
+# COMMAND 10: /deletestack — Scan and Delete Active Stack Link
 # ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="deletestack", description="Delete an active stack notice by scanning #current-link")
 @app_commands.describe(link="The exact Kirka lobby link to delete")
 async def deletestack(interaction: discord.Interaction, link: str):
-    # Enforce basic validation so we aren't scanning unnecessarily
     if "https://kirka.io/___lobby___/" not in link:
         await interaction.response.send_message(
             "❌ **Invalid link format.** Make sure you paste the complete Kirka lobby URL.", 
@@ -646,7 +710,6 @@ async def deletestack(interaction: discord.Interaction, link: str):
 
     await interaction.response.defer(ephemeral=True)
 
-    # 1. Locate the text channel
     target_channel = discord.utils.get(interaction.guild.text_channels, name="current-link")
     if not target_channel:
         await interaction.followup.send(
@@ -657,11 +720,8 @@ async def deletestack(interaction: discord.Interaction, link: str):
 
     target_message = None
 
-    # 2. Scan the recent message history of the channel for the full link
     try:
-        # Scanning the last 50 messages is usually more than enough for an active link channel
         async for message in target_channel.history(limit=50):
-            # Check if the message contains the exact full link string
             if message.embeds and len(message.embeds) > 0:
                 embed_desc = message.embeds[0].description or ""
                 if link in embed_desc:
@@ -674,7 +734,6 @@ async def deletestack(interaction: discord.Interaction, link: str):
         await interaction.followup.send("❌ The bot lacks permissions to read history in `#current-link`.", ephemeral=True)
         return
 
-    # 3. If the link can't be found anywhere in the channel history
     if not target_message:
         await interaction.followup.send(
             "❌ There is no stack ping with that link or it has been auto deleted by the bot already.",
@@ -682,10 +741,7 @@ async def deletestack(interaction: discord.Interaction, link: str):
         )
         return
 
-    # 4. Check Authorization (Only creator or Admin can delete)
     is_admin = interaction.user.guild_permissions.administrator
-    
-    # We can read who triggered the original command from the embed description or footer metadata
     creator_match = f"Stack by @{interaction.user.name}" in (target_message.embeds[0].description or "")
     footer_match = f"Link sent by @{interaction.user.name}" in (target_message.embeds[0].footer.text or "")
     
@@ -696,16 +752,11 @@ async def deletestack(interaction: discord.Interaction, link: str):
         )
         return
 
-    # 5. Execute the deletion
     try:
         await target_message.delete()
-        
-        # Clean up the old memory reference too if it exists
         if 'active_stacks' in globals() and link in active_stacks:
             active_stacks.pop(link, None)
-            
         await interaction.followup.send("✅ The stack ping has been successfully deleted!", ephemeral=True)
-        
     except discord.NotFound:
         await interaction.followup.send(
             "❌ There is no stack ping with that link or it has been auto deleted by the bot already.", 
