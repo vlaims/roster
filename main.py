@@ -89,22 +89,22 @@ async def kirka_get_clan(clan_name: str):
         return None
 
 
-async def kirka_get_ranked2v2():
-    """GET /api/leaderboard/ranked2V2 — returns leaderboard dict or None."""
+async def kirka_get_rankedSAD():
+    """GET /api/leaderboard/rankedSAD — returns leaderboard dict or None."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{KIRKA_BASE_URL}/api/leaderboard/ranked2V2",
+                f"{KIRKA_BASE_URL}/api/leaderboard/rankedSAD",
                 headers=kirka_headers(),
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 body = await resp.text()
-                print(f"[Kirka] ranked2V2 → HTTP {resp.status} | {body[:200]}")
+                print(f"[Kirka] rankedSAD → HTTP {resp.status} | {body[:200]}")
                 return None
     except Exception as e:
-        print(f"[Kirka] ranked2V2 error: {e}")
+        print(f"[Kirka] rankedSAD error: {e}")
         return None
 
 
@@ -354,7 +354,7 @@ async def kick(interaction: discord.Interaction, name: str):
 # ─────────────────────────────────────────────────────────────
 # COMMAND 4: /prp — PRP + K/D for all roster players
 # ─────────────────────────────────────────────────────────────
-@bot.tree.command(name="prp", description="Check Ranked 2v2 Points and K/D for all roster players")
+@bot.tree.command(name="prp", description="Check Ranked Search and Destroy Points and K/D for all roster players")
 async def prp(interaction: discord.Interaction):
     await interaction.response.defer()
     supabase_url = os.environ.get('SUPABASE_URL')
@@ -388,18 +388,18 @@ async def prp(interaction: discord.Interaction):
             if player_id:
                 profile = await kirka_get_profile(player_id)
                 if profile:
-                    prp_val = float(profile.get('klo2V2', 0) or 0)
+                    prp_val = float(profile.get('kloSAD', 0) or 0)
                     stats   = profile.get('stats', {})
                     kills   = stats.get('kills', 0) or 0
                     deaths  = stats.get('deaths', 0) or 1  # avoid div/0
                     kd_val  = round(kills / deaths, 2)
-                    results.append({'name': name, 'prp': prp_val, 'kd': kd_val, 'found': True})
+                    results.append({'name': name, 'KLO': prp_val, 'kd': kd_val, 'found': True})
                 else:
-                    results.append({'name': name, 'prp': 0.0, 'kd': 0.0, 'found': False})
+                    results.append({'name': name, 'KLO': 0.0, 'kd': 0.0, 'found': False})
             else:
                 results.append({'name': name, 'prp': 0.0, 'kd': 0.0, 'found': False})
         results.sort(key=lambda x: x['prp'], reverse=True)
-        embed = discord.Embed(title="🏆 Ranked 2v2 Leaderboard", color=discord.Color.gold())
+        embed = discord.Embed(title="🏆 Ranked SAD Leaderboard", color=discord.Color.gold())
         leaderboard_text = ""
         for idx, p in enumerate(results, 1):
             fancy_name  = to_fancy_font(p['name'])
@@ -443,7 +443,7 @@ async def profile(interaction: discord.Interaction, player_id: str):
     embed.add_field(name="Level",    value=data.get('level', 'N/A'),  inline=True)
     embed.add_field(name="Clan",     value=data.get('clan') or 'None', inline=True)
     embed.add_field(name="Role",     value=data.get('role', 'N/A'),   inline=True)
-    embed.add_field(name="PRP (2v2)", value=f"`{prp:,.2f}`",          inline=True)
+    embed.add_field(name="kloSAD", value=f"`{prp:,.2f}`",          inline=True)
     embed.add_field(name="K/D",       value=f"`{kd:.2f}`",            inline=True)
     embed.add_field(name="Kills",     value=f"`{kills:,}`",           inline=True)
     embed.add_field(name="Deaths",    value=f"`{stats.get('deaths', 0):,}`", inline=True)
